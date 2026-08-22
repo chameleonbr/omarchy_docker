@@ -345,6 +345,10 @@ Item {
 
   onActiveTabChanged: refreshTab()
 
+  // A stack coming up or going down changes which images belong where.
+  onContainersChanged: if (activeTab === "images" && images.length > 0)
+    images = Docker.attachProjects(images, containers)
+
   function refreshTab() {
     if (activeTab === "images") load("images")
     else if (activeTab === "volumes") load("volumes")
@@ -374,7 +378,10 @@ Item {
       exitReady = false
       if (lastExit !== 0) return
 
-      if (kind === "images") root.images = Docker.parseImages(pendingText)
+      // Images carry no compose label; the containers on hand are what relate
+      // them to a stack, so the panel groups the way the rest of it does.
+      if (kind === "images") root.images =
+        Docker.attachProjects(Docker.parseImages(pendingText), root.containers)
       else if (kind === "volumes") root.volumes = Docker.parseVolumes(pendingText)
       else if (kind === "networks") root.networks = Docker.parseNetworks(pendingText)
     }

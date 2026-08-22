@@ -1064,6 +1064,74 @@ function parseNetworks(stdout) {
   return networks
 }
 
+// Images carry no compose label — only containers do. But the whole panel is
+// organised by stack, and an images tab organised by repository quietly drops
+// that: `analise_pdfs-api` and `backlog-pipeline-api` become two unrelated rows
+// when they are the heart of two different stacks.
+//
+// The relationship is recoverable from the containers already on hand, and from
+// the naming compose uses for what it builds.
+function projectForImage(image, containersByImage, projects) {
+  // A container using the image says it outright, and says it correctly even
+  // when the name looks like nothing.
+  var direct = containersByImage[image.name] || containersByImage[image.group]
+  if (direct) return direct
+
+  // Compose names what it builds `<project>-<service>`. Longest project first,
+  // so `web-shop-api` is not claimed by a project called `web`.
+  for (var i = 0; i < projects.length; i++) {
+    if (image.group.indexOf(projects[i] + "-") === 0) return projects[i]
+  }
+
+  return ""
+}
+
+function indexContainersByImage(containers) {
+  var byImage = {}
+  for (var i = 0; i < containers.length; i++) {
+    var container = containers[i]
+    if (!container.project) continue
+    byImage[container.image] = container.project
+    // Also without the tag, since an image row may carry one and the container
+    // reference may not.
+    byImage[container.image.split(":")[0]] = container.project
+  }
+  return byImage
+}
+
+function knownProjects(containers) {
+  var seen = {}
+  var projects = []
+  for (var i = 0; i < containers.length; i++) {
+    var project = containers[i].project
+    if (!project || seen[project]) continue
+    seen[project] = true
+    projects.push(project)
+  }
+  // Longest first: prefix matching is only safe from the most specific end.
+  return projects.sort(function(left, right) { return right.length - left.length })
+}
+
+// Images tagged with their stack, so the tab groups the way the rest of the
+// panel does. Anything that belongs to no stack keeps its repository, which is
+// the only grouping it has.
+function attachProjects(images, containers) {
+  var byImage = indexContainersByImage(containers)
+  var projects = knownProjects(containers)
+  var out = []
+
+  for (var i = 0; i < images.length; i++) {
+    var image = images[i]
+    var project = projectForImage(image, byImage, projects)
+    out.push(Object.assign({}, image, {
+      project: project,
+      group: project || image.group
+    }))
+  }
+
+  return out
+}
+
 function resourceRemoveCommand(resource) {
   if (resource.kind === "image") return [ENGINE, "rmi", resource.id]
   if (resource.kind === "volume") return [ENGINE, "volume", "rm", resource.name]

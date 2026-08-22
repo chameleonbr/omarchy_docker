@@ -1422,4 +1422,72 @@ check("resource search covers the name, the group and the detail", () => {
   assert.strictEqual(searchResources(items, "nope").length, 0)
 })
 
+
+// ------------------------------------------------- images by their stack
+
+const STACK_IMAGES = parseImages([
+  '{"Containers":"1","CreatedSince":"2 days","ID":"a","Repository":"web-shop-api","Size":"764MB","Tag":"latest"}',
+  '{"Containers":"1","CreatedSince":"1 day","ID":"b","Repository":"redis","Size":"41MB","Tag":"7-alpine"}',
+  '{"Containers":"0","CreatedSince":"9 days","ID":"c","Repository":"grafana/grafana","Size":"400MB","Tag":"latest"}'
+].join("\n"))
+
+check("an image is filed under the stack whose container runs it", () => {
+  // The whole panel is organised by stack; an images tab organised by
+  // repository quietly drops that.
+  const containers = [
+    { name: "web-shop-cache-1", project: "web-shop", image: "redis:7-alpine" }
+  ]
+  const tagged = attachProjects(STACK_IMAGES, containers)
+  const byName = {}
+  for (const image of tagged) byName[image.name] = image
+
+  assert.strictEqual(byName["redis:7-alpine"].group, "web-shop",
+    "the container using it says so outright")
+})
+
+check("an image compose built is filed by its name", () => {
+  // Compose names what it builds `<project>-<service>`, which is the only clue
+  // when no container is running it.
+  const containers = [{ name: "x", project: "web-shop", image: "other" }]
+  const tagged = attachProjects(STACK_IMAGES, containers)
+  const byName = {}
+  for (const image of tagged) byName[image.name] = image
+
+  assert.strictEqual(byName["web-shop-api:latest"].group, "web-shop")
+})
+
+check("a longer project name wins the prefix match", () => {
+  // Otherwise a project called `web` claims `web-shop-api`.
+  const containers = [
+    { name: "a", project: "web", image: "nothing" },
+    { name: "b", project: "web-shop", image: "nothing" }
+  ]
+  const tagged = attachProjects(STACK_IMAGES, containers)
+  const built = tagged.find(image => image.name === "web-shop-api:latest")
+
+  assert.strictEqual(built.group, "web-shop")
+})
+
+check("an image belonging to no stack keeps its repository", () => {
+  const tagged = attachProjects(STACK_IMAGES, [])
+  const orphan = tagged.find(image => image.name === "grafana/grafana:latest")
+
+  assert.strictEqual(orphan.project, "", "no stack claimed it")
+  assert.strictEqual(orphan.group, "grafana/grafana", "and it still has a group")
+})
+
+check("relating images to stacks never loses one", () => {
+  const containers = parsePs(psFixture)
+  const tagged = attachProjects(STACK_IMAGES, containers)
+
+  assert.strictEqual(tagged.length, STACK_IMAGES.length)
+  for (const image of tagged) assert.ok(image.group, image.name + " has a group")
+})
+
+check("attaching does not mutate the images it was given", () => {
+  const before = JSON.parse(JSON.stringify(STACK_IMAGES))
+  attachProjects(STACK_IMAGES, [{ name: "x", project: "web-shop", image: "redis:7-alpine" }])
+  assert.deepStrictEqual(STACK_IMAGES, before)
+})
+
 console.log(passed + " checks passed")
