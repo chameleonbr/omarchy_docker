@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "id": "avila.docker",
+  "name": "Docker",
+  "version": "1.0.0",
+  "author": "Andre Avila",
+  "license": "MIT",
+  "description": "Container status as a mosaic in the bar, one cell per container, with CPU and memory cycling beside it.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Docker",
+    "description": "One cell per container, coloured by state; click for stacks, restart and logs.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "groupBy": "auto",
+      "cellGap": 2,
+      "pulseRestarting": true,
+      "metrics": "cpu,mem",
+      "metricRotateMs": 4000,
+      "statsIntervalMs": 30000,
+      "statsOnBattery": false,
+      "pollIntervalMs": 60000,
+      "openPollIntervalMs": 3000,
+      "showStopped": true,
+      "hideProjects": "",
+      "dockerUrl": "",
+      "logTail": 200,
+      "primaryAction": "popup",
+      "cellSize": 4,
+      "stackGap": 3,
+      "groupStacks": true,
+      "maxWidth": 160
+    },
+    "schema": [
+      {
+        "key": "primaryAction",
+        "type": "string",
+        "label": "Left click opens",
+        "description": "popup shows stacks and actions; lazydocker skips straight to the TUI. Middle click always opens lazydocker.",
+        "options": [
+          "popup",
+          "lazydocker"
+        ],
+        "defaultValue": "popup"
+      },
+      {
+        "key": "groupBy",
+        "type": "string",
+        "label": "One cell per",
+        "description": "auto switches to stacks once there are more containers than the cell limit.",
+        "options": [
+          "auto",
+          "container",
+          "stack"
+        ],
+        "defaultValue": "auto"
+      },
+      {
+        "key": "cellGap",
+        "type": "integer",
+        "label": "Gap between cells",
+        "min": 1,
+        "max": 4,
+        "step": 1,
+        "defaultValue": 2,
+        "description": "Space between cells of the same stack. Keep this at 2 or more: the bar can place the widget on a half pixel, and a 1px gap then rounds away between some cells, which makes them look fused."
+      },
+      {
+        "key": "cellSize",
+        "type": "integer",
+        "label": "Cell size (px)",
+        "description": "A smaller cell fits more rows into the same bar, so the mosaic gets much narrower, not just smaller.",
+        "min": 2,
+        "max": 14,
+        "step": 1,
+        "defaultValue": 4
+      },
+      {
+        "key": "stackGap",
+        "type": "integer",
+        "label": "Space between stacks (px)",
+        "description": "Extra space marking where one compose stack ends and the next begins.",
+        "min": 0,
+        "max": 8,
+        "step": 1,
+        "defaultValue": 3
+      },
+      {
+        "key": "groupStacks",
+        "type": "boolean",
+        "label": "Group containers by stack",
+        "description": "Off lays every container out in plain balanced rows, with no stack boundaries.",
+        "defaultValue": true
+      },
+      {
+        "key": "maxWidth",
+        "type": "integer",
+        "label": "Width budget (px)",
+        "description": "Above this the mosaic collapses to one cell per stack, and then to a single block.",
+        "min": 40,
+        "max": 600,
+        "step": 10,
+        "defaultValue": 160
+      },
+      {
+        "key": "pulseRestarting",
+        "type": "boolean",
+        "label": "Pulse restarting containers",
+        "description": "The only movement in the widget, kept for the state that otherwise goes unnoticed.",
+        "defaultValue": true
+      },
+      {
+        "key": "metrics",
+        "type": "string",
+        "label": "Metrics to cycle",
+        "description": "Comma separated, in order: cpu, mem, memPerc, net, count. Empty hides the label.",
+        "defaultValue": "cpu,mem"
+      },
+      {
+        "key": "metricRotateMs",
+        "type": "integer",
+        "label": "Metric rotation (ms)",
+        "min": 1500,
+        "max": 30000,
+        "step": 500,
+        "defaultValue": 4000
+      },
+      {
+        "key": "statsIntervalMs",
+        "type": "integer",
+        "label": "CPU/memory sampling (ms)",
+        "description": "docker stats costs seconds on a busy machine. Sampling faster than this buys nothing.",
+        "min": 10000,
+        "max": 300000,
+        "step": 5000,
+        "defaultValue": 30000
+      },
+      {
+        "key": "statsOnBattery",
+        "type": "boolean",
+        "label": "Sample CPU/memory on battery",
+        "defaultValue": false
+      },
+      {
+        "key": "pollIntervalMs",
+        "type": "integer",
+        "label": "State safety poll (ms)",
+        "description": "Backstop in case the docker events stream dies quietly.",
+        "min": 10000,
+        "max": 300000,
+        "step": 5000,
+        "defaultValue": 60000
+      },
+      {
+        "key": "openPollIntervalMs",
+        "type": "integer",
+        "label": "State poll while open (ms)",
+        "min": 1000,
+        "max": 15000,
+        "step": 500,
+        "defaultValue": 3000
+      },
+      {
+        "key": "showStopped",
+        "type": "boolean",
+        "label": "Show stopped containers",
+        "defaultValue": true
+      },
+      {
+        "key": "hideProjects",
+        "type": "string",
+        "label": "Hidden projects",
+        "description": "Comma separated compose project names.",
+        "defaultValue": ""
+      },
+      {
+        "key": "dockerUrl",
+        "type": "string",
+        "label": "Web UI",
+        "description": "Opened on right click.",
+        "defaultValue": ""
+      },
+      {
+        "key": "logTail",
+        "type": "integer",
+        "label": "Log lines",
+        "min": 20,
+        "max": 2000,
+        "step": 20,
+        "defaultValue": 200
+      }
+    ]
+  }
+}

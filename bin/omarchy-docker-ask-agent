@@ -1,0 +1,88 @@
+#!/bin/bash
+
+# Hand one container's log to the default Omarchy coding agent.
+#
+# Called by the avila.docker bar widget, and usable by hand:
+#   omarchy-docker-ask-agent <container-id> [name] [tail]
+#
+# The log goes to a file rather than into the prompt: a few hundred lines of
+# container output does not belong in argv, and every agent reads files anyway.
+# This follows omarchy-agent-crash, which passes facts and a path rather than a
+# payload.
+
+set -euo pipefail
+
+id=${1:?usage: omarchy-docker-ask-agent <container-id> [name] [tail]}
+name=${2:-$id}
+tail_lines=${3:-400}
+
+fail() {
+  # The widget runs this detached, so stderr goes nowhere a user will look.
+  notify-send -u critical "Docker" "$1" 2>/dev/null || true
+  echo "$1" >&2
+  exit 1
+}
+
+agent=$(omarchy-default-agent)
+[[ -n $agent ]] || fail "Nenhum agente padrão definido. Escolha um com: omarchy default agent <nome>"
+
+command -v docker >/dev/null 2>&1 || fail "docker não encontrado"
+
+# Facts worth having next to the log, in one docker call. Restart count and exit
+# code are usually the whole story for a container that will not stay up.
+read -r state exit_code restarts health image started < <(
+  docker inspect --format \
+    '{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.Config.Image}} {{.State.StartedAt}}' \
+    "$id" 2>/dev/null
+) || fail "Container não encontrado: $name"
+
+project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$id" 2>/dev/null || true)
+service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id" 2>/dev/null || true)
+workdir=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$id" 2>/dev/null || true)
+
+log_dir="${XDG_RUNTIME_DIR:-/tmp}/omarchy-docker"
+mkdir -p "$log_dir"
+log_file="$log_dir/${name//[^a-zA-Z0-9_-]/_}.log"
+
+# Both streams: container errors overwhelmingly arrive on stderr, and splitting
+# them here would hide the interesting half.
+docker logs --tail "$tail_lines" --timestamps "$id" >"$log_file" 2>&1 ||
+  fail "Não consegui ler o log de $name"
+
+lines=$(wc -l <"$log_file")
+
+# Where the agent should work. A compose stack's directory is far more useful
+# than $HOME, because that is where the file it needs to edit lives.
+if [[ -n $workdir && -d $workdir ]]; then
+  cd "$workdir"
+fi
+
+prompt=$(
+  cat <<PROMPT
+Um container Docker desta máquina está com problema e quero saber por quê.
+
+O que o Docker reporta:
+  container:  $name
+  serviço:    ${service:-(fora do compose)}
+  stack:      ${project:-(fora do compose)}
+  imagem:     $image
+  estado:     $state
+  exit code:  $exit_code
+  restarts:   $restarts
+  health:     $health
+  iniciado:   $started
+${workdir:+  diretório:  $workdir
+}
+As últimas $lines linhas do log estão em:
+
+  $log_file
+
+Leia esse arquivo primeiro. Diga qual é a causa raiz, o que corrigir e onde —
+${workdir:+o compose deste stack está em $workdir. }Se o log não for
+suficiente para concluir, diga o que falta e qual comando roda para obter.
+
+Não reinicie nem altere nada sem me perguntar antes.
+PROMPT
+)
+
+exec omarchy-agent --prompt "$prompt"

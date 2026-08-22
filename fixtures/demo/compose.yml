@@ -1,0 +1,52 @@
+# Throwaway stack used to generate fixtures/ and the README screenshot.
+#
+# It deliberately produces one container in every state the widget has to
+# render, so the checks in test_docker.js run against a real capture rather than
+# hand-written JSON — including the awkward ones: a clean exit, a failed exit, a
+# restart loop and a failing healthcheck.
+#
+#   docker compose -f fixtures/demo/compose.yml -p web-shop up -d
+#   docker ps -a --no-trunc --format '{{json .}}' > fixtures/ps.jsonl
+#   docker stats --no-stream --format '{{json .}}'  > fixtures/stats.jsonl
+#   docker compose -f fixtures/demo/compose.yml -p web-shop down -v
+
+services:
+  # running, with a healthcheck that passes
+  cache:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  # running, no healthcheck
+  proxy:
+    image: nginx:alpine
+    ports:
+      - "18080:80"
+
+  # running, with a healthcheck that never passes
+  api:
+    image: nginx:alpine
+    healthcheck:
+      test: ["CMD", "sh", "-c", "exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 1
+
+  # exited cleanly: a migration that finished
+  migrate:
+    image: alpine:latest
+    command: ["sh", "-c", "echo migrations applied; exit 0"]
+
+  # exited with a failure
+  worker:
+    image: alpine:latest
+    command: ["sh", "-c", "echo cannot reach queue >&2; exit 1"]
+
+  # stuck in a restart loop, which is the state the widget exists to surface
+  flaky:
+    image: alpine:latest
+    restart: always
+    command: ["sh", "-c", "echo starting; sleep 2; echo giving up >&2; exit 1"]

@@ -1,0 +1,16 @@
+# A second stack, so the fixtures exercise grouping and stack rollups.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: fixture
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  collector:
+    image: alpine:latest
+    command: ["sh", "-c", "while true; do sleep 30; done"]
