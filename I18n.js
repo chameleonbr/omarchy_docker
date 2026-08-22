@@ -76,6 +76,7 @@ var STRINGS = {
     "action.logs": "logs",
     "action.clean": "clean up",
     "action.show": "show",
+    "action.cancel": "cancel",
     "action.hide": "hide",
 
     // tooltips
@@ -202,6 +203,7 @@ var STRINGS = {
     "action.logs": "logs",
     "action.clean": "limpar",
     "action.show": "ver",
+    "action.cancel": "cancelar",
     "action.hide": "fechar",
 
     "tip.logs": "Logs",

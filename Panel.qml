@@ -342,21 +342,6 @@ Panel {
     confirmDialog.opened = true
   }
 
-  ConfirmDialog {
-    id: confirmDialog
-    cancelText: "Cancelar"
-    onConfirmed: {
-      var action = root.pendingConfirm
-      root.pendingConfirm = null
-      confirmDialog.opened = false
-      if (action) action()
-    }
-    onCanceled: {
-      root.pendingConfirm = null
-      confirmDialog.opened = false
-    }
-  }
-
   function widgetOnMonitor(monitor) {
     if (!monitor || !bar || typeof bar.moduleWidgets !== "function") return null
     var widgets = bar.moduleWidgets(root.moduleName) || []
@@ -543,14 +528,43 @@ Panel {
     return collapsedStacks[project] === true
   }
 
-  PopupCard {
+  // KeyboardPanel, not PopupCard.
+  //
+  // PopupCard is a PopupWindow and takes no keyboard focus at all, so the search
+  // field could never receive a keystroke — it looked like a text field and was
+  // one, and nothing typed into it arrived. KeyboardPanel is the qs.Ui surface
+  // built for exactly this, on PanelWindow with a keyboard focus prime.
+  KeyboardPanel {
     id: card
     anchorItem: button
     owner: root
     bar: root.bar
     open: root.opened
+    focusTarget: search
     contentWidth: card.fittedContentWidth(Style.space(660))
     contentHeight: card.fittedContentHeight(shell.implicitHeight, Style.space(820))
+
+    // Inside the panel, filling it. As a child of the bar widget — which is
+    // where this lived — the dialog's scrim anchored to an item roughly a
+    // hundred pixels wide inside the bar, so the confirmation rendered
+    // somewhere nobody could see or click it, and every destructive button
+    // silently did nothing.
+    ConfirmDialog {
+      id: confirmDialog
+      anchors.fill: parent
+      z: 100
+      cancelText: root.tr("action.cancel")
+      onConfirmed: {
+        var action = root.pendingConfirm
+        root.pendingConfirm = null
+        confirmDialog.opened = false
+        if (action) action()
+      }
+      onCanceled: {
+        root.pendingConfirm = null
+        confirmDialog.opened = false
+      }
+    }
 
     Column {
       id: shell

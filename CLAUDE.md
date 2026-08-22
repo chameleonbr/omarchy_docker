@@ -224,6 +224,19 @@ are separate entries in `PRUNE_TARGETS`, and dangling images carry
 list can be rebuilt or pulled again. There is a test asserting no target
 mentions volumes; do not "complete" the list.
 
+## Surfaces
+
+**The popup is a `KeyboardPanel`, not a `PopupCard`.** PopupCard is a
+PopupWindow and takes no keyboard focus at all: the search field looked like a
+text field, was one, and never received a keystroke. KeyboardPanel is the qs.Ui
+surface built for this, on PanelWindow with a keyboard focus prime.
+
+**`ConfirmDialog` fills the surface it is a child of.** Placed on the plugin
+root — which is the bar widget, about a hundred pixels wide — its scrim
+anchored to that, so every confirmation rendered inside the bar where nobody
+could see or click it, and every destructive button silently did nothing. It
+belongs inside the panel, `anchors.fill: parent`.
+
 ## Shared modules
 
 **`.pragma library` is not optional on `Docker.js` and `I18n.js`.** Without it,
