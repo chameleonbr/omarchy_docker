@@ -43,6 +43,39 @@ Panel {
   readonly property bool vertical: bar ? bar.vertical : false
   readonly property int barSize: bar ? bar.barSize : Style.bar.sizeHorizontal
   readonly property color foreground: bar ? bar.barForeground : Color.foreground
+
+  // State colours are semantic and come from the palette, never from
+  // `bar.urgent` — that one is `Color.bar.active`, the bar's highlight for the
+  // active item, which in a good many themes is a warm gold. Using it made a
+  // container that had crashed look exactly like one that was merely unhealthy,
+  // and left a reader asking what the gold meant. It meant nothing.
+  readonly property color okColor: foreground
+  readonly property color badColor: Color.urgent
+
+  // Some themes set `accent` to the foreground colour, which would render a
+  // warning identically to a healthy row and collapse three states into two.
+  // When the palette does not separate them, the warning colour is derived by
+  // meeting the error colour halfway: still the theme's own hues, and visibly
+  // between "fine" and "broken".
+  readonly property bool accentIsDistinct: colorDistance(Color.accent, foreground) > 0.12
+  readonly property color warnColor: accentIsDistinct
+    ? Color.accent
+    : Qt.rgba((okColor.r + badColor.r) / 2,
+              (okColor.g + badColor.g) / 2,
+              (okColor.b + badColor.b) / 2, 1)
+
+  function colorDistance(left, right) {
+    var dr = left.r - right.r
+    var dg = left.g - right.g
+    var db = left.b - right.b
+    return Math.sqrt(dr * dr + dg * dg + db * db)
+  }
+
+  function colorForState(state) {
+    if (state === "bad") return badColor
+    if (state === "warn") return warnColor
+    return okColor
+  }
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
@@ -348,9 +381,9 @@ Panel {
         visible: root.daemonOk && root.resolved.cells.length > 0
         plan: root.resolved
         pulseRestarting: root.pulseRestarting
-        okColor: root.foreground
-        warnColor: Color.accent
-        badColor: bar ? bar.urgent : Color.urgent
+        okColor: root.okColor
+        warnColor: root.warnColor
+        badColor: root.badColor
       }
 
       // Daemon down, or simply nothing running: both need a mark, and they are
@@ -364,7 +397,7 @@ Panel {
         height: root.mosaicHeight
         color: "transparent"
         border.width: 1
-        border.color: root.daemonOk ? root.dim : (bar ? bar.urgent : Color.urgent)
+        border.color: root.daemonOk ? root.dim : (root.badColor)
         radius: 2
 
         // A slash through the box for "no daemon"; an empty box for "no
@@ -375,7 +408,7 @@ Panel {
           width: parent.width * 1.25
           height: 1
           rotation: -45
-          color: bar ? bar.urgent : Color.urgent
+          color: root.badColor
         }
       }
 
@@ -492,9 +525,9 @@ Panel {
           height: Style.space(7)
           radius: width / 2
           color: root.daemonOk
-            ? (root.summary.worst === "bad" ? (bar ? bar.urgent : Color.urgent)
+            ? (root.summary.worst === "bad" ? (root.badColor)
               : (root.summary.worst === "warn" ? Color.accent : root.foreground))
-            : (bar ? bar.urgent : Color.urgent)
+            : (root.badColor)
         }
 
         Text {
@@ -516,7 +549,7 @@ Panel {
               + root.summary.total + " containers"
             return root.summary.running + "/" + root.summary.total + " containers"
           }
-          color: root.daemonOk ? root.dim : (bar ? bar.urgent : Color.urgent)
+          color: root.daemonOk ? root.dim : (root.badColor)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           width: parent.width - headerActions.implicitWidth - Style.space(140)
@@ -797,8 +830,8 @@ Panel {
             // a dialog that appears eleven times is a dialog nobody reads.
             label: "remover"
             visible: root.tab !== "containers"
-            foreground: bar ? bar.urgent : Color.urgent
-            dim: bar ? bar.urgent : Color.urgent
+            foreground: root.badColor
+            dim: root.badColor
             fontFamily: root.fontFamily
             onClicked: {
               var items = root.selectedItems
@@ -826,7 +859,7 @@ Panel {
         visible: root.service && root.service.lastResourceError !== ""
         text: root.service ? root.service.lastResourceError : ""
         textFormat: Text.PlainText
-        color: bar ? bar.urgent : Color.urgent
+        color: root.badColor
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
       }
@@ -886,16 +919,17 @@ Panel {
                 radius: Style.cornerRadius > 0 ? Style.space(4) : 0
                 // A group of one renders as the row alone.
                 visible: !resourceBlock.modelData.single
-                color: resourceGroupHover.containsMouse
+                color: resourceGroupHover.hovered
                   ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
                   : "transparent"
 
-                MouseArea {
+                HoverHandler {
                   id: resourceGroupHover
-                  anchors.fill: parent
-                  hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.toggleGroup(resourceBlock.modelData)
+                }
+
+                TapHandler {
+                  onTapped: root.toggleGroup(resourceBlock.modelData)
                 }
 
                 Row {
@@ -956,18 +990,20 @@ Panel {
                   radius: Style.cornerRadius > 0 ? Style.space(4) : 0
                   color: resourceRow.checked
                     ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.14)
-                    : (resourceHover.containsMouse
+                    : (resourceHover.hovered
                       ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
                       : "transparent")
 
                   Behavior on color { ColorAnimation { duration: 120 } }
 
-                  MouseArea {
+                  HoverHandler {
                     id: resourceHover
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: resourceRow.removable ? Qt.PointingHandCursor : Qt.ArrowCursor
-                    onClicked: if (resourceRow.removable) root.toggleRow(resourceRow.modelData.id)
+                    cursorShape: resourceRow.removable
+                      ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  }
+
+                  TapHandler {
+                    onTapped: if (resourceRow.removable) root.toggleRow(resourceRow.modelData.id)
                   }
 
                   Row {
@@ -1048,7 +1084,7 @@ Panel {
                       id: resourceActions
                       anchors.verticalCenter: parent.verticalCenter
                       spacing: Style.space(2)
-                      opacity: resourceHover.containsMouse || resourceRow.checked ? 1 : 0
+                      opacity: resourceHover.hovered || resourceRow.checked ? 1 : 0
 
                       Behavior on opacity { NumberAnimation { duration: 120 } }
 
@@ -1058,7 +1094,7 @@ Panel {
                           ? "Remover"
                           : "Rede do próprio engine — não removível"
                         foreground: root.dim
-                        hoverColor: bar ? bar.urgent : Color.urgent
+                        hoverColor: root.badColor
                         enabled: resourceRow.removable
                         opacity: enabled ? 1 : 0.4
                         onClicked: root.askConfirm(
@@ -1095,16 +1131,17 @@ Panel {
                 width: parent.width
                 height: stackRow.implicitHeight + Style.space(10)
                 radius: Style.cornerRadius > 0 ? Style.space(4) : 0
-                color: stackHover.containsMouse
+                color: stackHover.hovered
                   ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
                   : "transparent"
 
-                MouseArea {
+                HoverHandler {
                   id: stackHover
-                  anchors.fill: parent
-                  hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.toggleStack(stackBlock.modelData.project)
+                }
+
+                TapHandler {
+                  onTapped: root.toggleStack(stackBlock.modelData.project)
                 }
 
                 Row {
@@ -1130,7 +1167,7 @@ Panel {
                     height: Style.space(6)
                     radius: width / 2
                     color: stackBlock.modelData.worst === "bad"
-                      ? (bar ? bar.urgent : Color.urgent)
+                      ? (root.badColor)
                       : (stackBlock.modelData.worst === "warn" ? Color.accent : root.foreground)
                     opacity: stackBlock.modelData.worst === "idle" ? 0.35 : 1
                   }
@@ -1223,7 +1260,7 @@ Panel {
                   readonly property bool degraded:
                     modelData.cell === "bad" || modelData.cell === "warn"
                   readonly property color stateColor: modelData.cell === "bad"
-                    ? (bar ? bar.urgent : Color.urgent)
+                    ? (root.badColor)
                     : (modelData.cell === "warn" ? Color.accent : root.foreground)
 
                   width: list.width
@@ -1237,7 +1274,7 @@ Panel {
                     ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.14)
                     : row.degraded
                     ? Qt.rgba(row.stateColor.r, row.stateColor.g, row.stateColor.b, 0.16)
-                    : (rowHover.containsMouse
+                    : (rowHover.hovered
                       ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
                       : "transparent")
 
@@ -1255,12 +1292,13 @@ Panel {
                     color: row.stateColor
                   }
 
-                  MouseArea {
-                    id: rowHover
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.NoButton
-                  }
+                  // HoverHandler, not MouseArea: a child MouseArea — every one
+                  // of those action buttons has one — steals the hover, and the
+                  // parent's containsMouse goes false the moment the pointer
+                  // reaches a button. The buttons then vanish under the cursor
+                  // and leave a tooltip floating over nothing. A HoverHandler
+                  // is passive and keeps reporting.
+                  HoverHandler { id: rowHover }
 
                   Row {
                     id: containerRow
@@ -1284,24 +1322,34 @@ Panel {
                         width: Style.space(5)
                         height: Style.space(5)
                         radius: width / 2
-                        visible: !rowHover.containsMouse && !row.checked
+                        visible: !rowHover.hovered && !row.checked
                         color: row.stateColor
                         opacity: row.modelData.cell === "idle" ? 0.35 : 1
                       }
 
                       Text {
                         anchors.centerIn: parent
-                        visible: rowHover.containsMouse || row.checked
+                        visible: rowHover.hovered || row.checked
                         text: row.checked ? "󰄲" : "󰄱"
                         color: row.checked ? Color.accent : root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                       }
 
-                      MouseArea {
-                        anchors.fill: parent
+                      HoverHandler {
+                        id: dotMouse
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: root.toggleRow(row.modelData.id)
+                      }
+
+                      TapHandler {
+                        onTapped: root.toggleRow(row.modelData.id)
+                      }
+
+                      PanelToolTip {
+                        visible: dotMouse.hovered
+                        // Colour without a word is decoration. This is the
+                        // answer to "what does that marking mean".
+                        text: Docker.stateText(row.modelData) + " · clique para selecionar"
                       }
                     }
 
@@ -1360,7 +1408,7 @@ Panel {
                           text: (blocked ? "⚠" : "") + modelData
                           textFormat: Text.PlainText
                           color: blocked
-                            ? (bar ? bar.urgent : Color.urgent)
+                            ? (root.badColor)
                             : (portMouse.containsMouse ? Color.accent : root.dim)
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
@@ -1402,7 +1450,7 @@ Panel {
                       anchors.verticalCenter: parent.verticalCenter
                       spacing: Style.space(2)
                       opacity: row.busy ? 0.4
-                        : (row.degraded || rowHover.containsMouse ? 1 : 0)
+                        : (row.degraded || rowHover.hovered ? 1 : 0)
 
                       Behavior on opacity { NumberAnimation { duration: 120 } }
 
@@ -1475,7 +1523,7 @@ Panel {
                         iconText: "󰩹"
                         tooltipText: "Remover o container"
                         foreground: root.dim
-                        hoverColor: bar ? bar.urgent : Color.urgent
+                        hoverColor: root.badColor
                         visible: row.actions.canRemove
                         enabled: !row.busy
                         onClicked: root.askConfirm(

@@ -1490,4 +1490,31 @@ check("attaching does not mutate the images it was given", () => {
   assert.deepStrictEqual(STACK_IMAGES, before)
 })
 
+
+// ------------------------------------------------------- state in words
+
+check("every state a container can be in has a sentence", () => {
+  // A reader who has to ask what the gold marking means has been told nothing,
+  // however consistent the palette.
+  for (const container of parsePs(psFixture)) {
+    const text = stateText(container)
+    assert.ok(text.length > 0, container.name)
+    assert.notStrictEqual(text, container.state, container.name + " says more than the raw state")
+  }
+})
+
+check("the sentence separates the states a colour cannot", () => {
+  // These three are all "not healthy" and all wear the same colour family.
+  const unhealthy = stateText({ state: "running", health: "unhealthy" })
+  const looping = stateText({ state: "restarting" })
+  const crashed = stateText({ state: "exited", status: "Exited (255) 3 weeks ago" })
+
+  assert.ok(unhealthy !== looping && looping !== crashed && unhealthy !== crashed)
+  assert.ok(crashed.indexOf("255") > 0, "and it carries the exit code")
+})
+
+check("a clean stop does not read as a failure", () => {
+  assert.ok(stateText({ state: "exited", status: "Exited (0) 5 weeks ago" }).indexOf("sem erro") > 0)
+})
+
 console.log(passed + " checks passed")

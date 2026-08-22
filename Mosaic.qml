@@ -15,6 +15,8 @@ Item {
   // The object returned by Docker.planMosaic().
   property var plan: ({ cells: [], grid: { cells: [] }, cellPx: 0, gapPx: 1, blockGapPx: 0, width: 0 })
   property bool pulseRestarting: true
+  // Passed in by the panel, which owns the rule for deriving a warning colour
+  // when the theme sets `accent` equal to the foreground.
   property color okColor: Color.foreground
   property color warnColor: Color.accent
   property color badColor: Color.urgent

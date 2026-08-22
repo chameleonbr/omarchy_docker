@@ -71,6 +71,27 @@ function worstOf(states) {
   return worst
 }
 
+// What a colour means, in words. A reader who has to ask what the gold marking
+// is has been told nothing, however consistent the palette.
+function stateText(container) {
+  var state = String(container.state || "")
+  var health = String(container.health || "none")
+
+  if (state === "running" && health === "unhealthy") return "rodando, mas o healthcheck falha"
+  if (state === "running" && health === "starting") return "subindo — healthcheck ainda não passou"
+  if (state === "running") return "rodando"
+  if (state === "restarting") return "em loop de restart"
+  if (state === "paused") return "pausado"
+  if (state === "removing") return "sendo removido"
+  if (state === "dead") return "morto — o engine não conseguiu limpar"
+  if (state === "created") return "criado, nunca iniciado"
+  if (state === "exited") {
+    var code = exitCode(container.status)
+    return code === 0 ? "parado sem erro" : "saiu com erro (código " + code + ")"
+  }
+  return state
+}
+
 // Docker reports health as "none" (not ""), and keeps the last health value on
 // containers that have already exited — so health only counts while running.
 function classify(container) {
