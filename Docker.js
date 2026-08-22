@@ -92,6 +92,56 @@ function stateText(container) {
   return state
 }
 
+// The short word for a state, for the row itself.
+//
+// Colour cannot carry this on its own: a palette gives at most a couple of
+// usable hues, several themes set `accent` equal to the foreground, and four
+// states then separate by brightness alone. Docker's own phrasing does not
+// classify either — "Exited (143) About an hour ago" makes the reader do the
+// work of deciding whether 143 is bad news. The row says which of the four it
+// is, in a word, and the colour reinforces it.
+function stateLabel(container) {
+  var state = String(container.state || "")
+  var health = String(container.health || "none")
+
+  if (state === "running") {
+    if (health === "unhealthy") return "unhealthy"
+    if (health === "starting") return "subindo"
+    return "rodando"
+  }
+  if (state === "restarting") return "reiniciando"
+  if (state === "paused") return "pausado"
+  if (state === "removing") return "removendo"
+  if (state === "dead") return "morto"
+  if (state === "created") return "criado"
+  if (state === "exited") return exitCode(container.status) === 0 ? "parado" : "falhou"
+  return state
+}
+
+// The number that matters next to the word, and nothing else. An exit code is
+// worth reading; "About an hour ago" is worth reading; the rest of docker's
+// sentence is scaffolding between them.
+function stateDetail(container) {
+  var state = String(container.state || "")
+  var status = String(container.status || "")
+  var age = relativeAge(status)
+
+  if (state === "exited") {
+    var code = exitCode(status)
+    return code === 0 ? age : "código " + code + " · " + age
+  }
+  return age
+}
+
+// "Up 6 days (healthy)" -> "6 days". "Exited (143) 5 weeks ago" -> "5 weeks".
+// "Restarting (1) 39 seconds ago" -> "39 seconds".
+function relativeAge(status) {
+  var match = /(?:Up|Exited \(\d+\)|Restarting \(\d+\))\s+(.+?)(?:\s+ago)?(?:\s+\(.*\))?$/
+    .exec(String(status || "").trim())
+  if (!match) return String(status || "")
+  return match[1].replace(/^About\s+/i, "").trim()
+}
+
 // Docker reports health as "none" (not ""), and keeps the last health value on
 // containers that have already exited — so health only counts while running.
 function classify(container) {

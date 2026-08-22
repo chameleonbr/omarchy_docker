@@ -1517,4 +1517,53 @@ check("a clean stop does not read as a failure", () => {
   assert.ok(stateText({ state: "exited", status: "Exited (0) 5 weeks ago" }).indexOf("sem erro") > 0)
 })
 
+
+// -------------------------------------------------- the word on the row
+
+check("the row classifies instead of repeating docker", () => {
+  // "Exited (143) About an hour ago" makes the reader decide whether 143 is bad
+  // news. The row says which of the four states it is.
+  assert.strictEqual(stateLabel({ state: "exited", status: "Exited (143) 5 weeks ago" }), "falhou")
+  assert.strictEqual(stateLabel({ state: "exited", status: "Exited (0) 5 weeks ago" }), "parado")
+  assert.strictEqual(stateLabel({ state: "running", health: "none" }), "rodando")
+  assert.strictEqual(stateLabel({ state: "running", health: "unhealthy" }), "unhealthy")
+  assert.strictEqual(stateLabel({ state: "running", health: "starting" }), "subindo")
+  assert.strictEqual(stateLabel({ state: "restarting" }), "reiniciando")
+  assert.strictEqual(stateLabel({ state: "paused" }), "pausado")
+  assert.strictEqual(stateLabel({ state: "created" }), "criado")
+  assert.strictEqual(stateLabel({ state: "dead" }), "morto")
+})
+
+check("a clean stop and a failure are different words, not shades", () => {
+  const clean = stateLabel({ state: "exited", status: "Exited (0) 1 hour ago" })
+  const failed = stateLabel({ state: "exited", status: "Exited (1) 1 hour ago" })
+  assert.notStrictEqual(clean, failed)
+})
+
+check("the detail keeps the exit code and drops the scaffolding", () => {
+  assert.strictEqual(
+    stateDetail({ state: "exited", status: "Exited (143) About an hour ago" }),
+    "código 143 · an hour")
+  assert.strictEqual(
+    stateDetail({ state: "exited", status: "Exited (0) 5 weeks ago" }), "5 weeks")
+  assert.strictEqual(
+    stateDetail({ state: "running", status: "Up 6 days (healthy)" }), "6 days")
+  assert.strictEqual(
+    stateDetail({ state: "restarting", status: "Restarting (1) 39 seconds ago" }), "39 seconds")
+})
+
+check("an unfamiliar status is passed through rather than swallowed", () => {
+  // Better to show something docker said than to show nothing.
+  assert.strictEqual(relativeAge("something new"), "something new")
+  assert.strictEqual(relativeAge(""), "")
+})
+
+check("every container in the fixture gets a word and a detail", () => {
+  for (const container of parsePs(psFixture)) {
+    assert.ok(stateLabel(container).length > 0, container.name)
+    assert.ok(stateDetail(container).length > 0, container.name)
+    assert.ok(stateLabel(container).length <= 12, container.name + " stays short")
+  }
+})
+
 console.log(passed + " checks passed")

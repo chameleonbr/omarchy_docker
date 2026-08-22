@@ -1364,9 +1364,27 @@ Panel {
                       width: Style.space(112)
                     }
 
+                    // The word first, in the state's colour; the numbers after
+                    // it, dim. Colour reinforces the word rather than being the
+                    // only thing carrying the meaning — a palette gives at most
+                    // a couple of usable hues, and four states cannot live in
+                    // that.
                     Text {
                       anchors.verticalCenter: parent.verticalCenter
-                      text: row.modelData.status
+                      text: Docker.stateLabel(row.modelData)
+                      textFormat: Text.PlainText
+                      color: row.stateColor
+                      opacity: row.modelData.cell === "idle" ? 0.6 : 1
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: row.degraded
+                      width: Style.space(74)
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: Docker.stateDetail(row.modelData)
                       textFormat: Text.PlainText
                       color: root.dim
                       font.family: root.fontFamily
@@ -1375,9 +1393,10 @@ Panel {
                       // Takes whatever is left rather than a fixed column: a
                       // fixed one leaves a hole in the middle of every row on a
                       // wide card, and truncates on a narrow one.
-                      width: Math.max(Style.space(50),
-                        containerRow.width - Style.space(112) - portsRow.width
-                          - Style.space(88) - rowActions.implicitWidth - Style.space(40))
+                      width: Math.max(Style.space(40),
+                        containerRow.width - Style.space(112) - Style.space(74)
+                          - portsRow.width - Style.space(88)
+                          - rowActions.implicitWidth - Style.space(46))
                     }
 
                     // Ports: clickable, and marked when something else already
