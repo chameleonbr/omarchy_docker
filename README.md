@@ -1,4 +1,4 @@
-# Docker for the Omarchy bar
+# Ultra Docker
 
 One cell per container, coloured by state, sitting in the icon area of the bar.
 CPU and memory cycle beside it. Clicking gets you stacks, restart and logs —
@@ -64,7 +64,7 @@ top, because that is a list you read rather than a shape you recognise.
 
 ```bash
 omarchy plugin add \
-  https://github.com/chameleonbr/omarchy_docker.git \
+  https://github.com/chameleonbr/omarchy_ultra_docker.git \
   --enable \
   --yes
 ```
@@ -198,11 +198,11 @@ appears where you asked for it.
 The same actions are reachable from a Hyprland binding:
 
 ```bash
-omarchy-shell avila.docker toggle
-omarchy-shell avila.docker toggleOn DP-1     # on one specific monitor
-omarchy-shell avila.docker lazydocker
-omarchy-shell avila.docker stack web-shop
-omarchy-shell avila.docker refresh
+omarchy-shell avila.ultra-docker toggle
+omarchy-shell avila.ultra-docker toggleOn DP-1     # on one specific monitor
+omarchy-shell avila.ultra-docker lazydocker
+omarchy-shell avila.ultra-docker stack web-shop
+omarchy-shell avila.ultra-docker refresh
 ```
 
 ## Settings

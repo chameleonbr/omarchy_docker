@@ -2,7 +2,7 @@
 
 # Hand one container's log to the default Omarchy coding agent.
 #
-# Called by the avila.docker bar widget, and usable by hand:
+# Called by the avila.ultra-docker bar widget, and usable by hand:
 #   omarchy-docker-ask-agent <container-id> [name] [tail]
 #
 # The log goes to a file rather than into the prompt: a few hundred lines of

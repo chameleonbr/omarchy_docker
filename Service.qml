@@ -1,4 +1,4 @@
-// Container registry for the avila.docker plugin.
+// Container registry for the avila.ultra-docker plugin.
 //
 // Loaded once per shell session (kind: "service"), so the bar widget — which
 // the shell instantiates once per monitor — reads one shared container list

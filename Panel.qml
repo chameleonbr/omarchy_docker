@@ -1,4 +1,4 @@
-// Bar widget + popup for the avila.docker plugin.
+// Bar widget + popup for the avila.ultra-docker plugin.
 //
 // The bar half is a mosaic: one cell per container, coloured by state, with a
 // metric label cycling beside it. Nothing in it is a number you have to read.
@@ -18,8 +18,8 @@ import "I18n.js" as I18n
 
 Panel {
   id: root
-  moduleName: "avila.docker"
-  ipcTarget: "avila.docker"
+  moduleName: "avila.ultra-docker"
+  ipcTarget: "avila.ultra-docker"
   // Own handler instead of the base one: the extra methods below are the same
   // actions the widget offers, reachable from a Hyprland keybinding.
   manageIpc: false
@@ -278,7 +278,7 @@ Panel {
   }
 
   IpcHandler {
-    target: "avila.docker"
+    target: "avila.ultra-docker"
 
     function open(): void { root.open() }
     function close(): void { root.close() }

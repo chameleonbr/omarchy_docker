@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "avila.docker",
-  "name": "Docker",
+  "id": "avila.ultra-docker",
+  "name": "Ultra Docker",
   "version": "1.0.0",
   "author": "Andre Avila",
   "license": "MIT",
-  "description": "Container status as a mosaic in the bar, one cell per container, with CPU and memory cycling beside it.",
+  "description": "Container status as a mosaic in the bar, one cell per container, grouped by compose stack — with lazydocker, disk cleanup and a handoff to your coding agent.",
   "kinds": [
     "service",
     "bar-widget"
@@ -15,7 +15,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Docker",
+    "displayName": "Ultra Docker",
     "description": "One cell per container, coloured by state; click for stacks, restart and logs.",
     "category": "System",
     "allowMultiple": false,

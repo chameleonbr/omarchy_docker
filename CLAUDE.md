@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Working notes for `avila.docker`, an Omarchy shell plugin. Read this before
+Working notes for `avila.ultra-docker`, an Omarchy shell plugin. Read this before
 changing anything here.
 
 ## Development loop
@@ -8,7 +8,7 @@ changing anything here.
 The plugin is installed as a symlink:
 
 ```
-~/.config/omarchy/plugins/avila.docker -> ~/orca/omarchy_docker
+~/.config/omarchy/plugins/avila.ultra-docker -> ~/orca/omarchy_docker
 ```
 
 **The shell's file watcher does not follow that symlink.** Saving a file here

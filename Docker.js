@@ -4,7 +4,7 @@
 // its own copy, and the engine selected in Service.qml would not be the engine
 // Panel.qml builds commands with.
 
-// Pure logic for the avila.docker plugin: parsing docker output, grouping by
+// Pure logic for the avila.ultra-docker plugin: parsing docker output, grouping by
 // compose stack, laying the mosaic grid out, and building command lines.
 //
 // Everything here is deterministic and free of QML types so test_docker.js can
