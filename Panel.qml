@@ -429,8 +429,13 @@ Panel {
 
   readonly property var tabGroups: Docker.groupResources(tabItems)
 
-  readonly property var selectedItems: Docker.selectedFrom(tabItems, selection)
-  readonly property int selectedCount: Docker.selectionCount(selection)
+  // The containers tab selects too — the plan promised bulk start, stop and
+  // restart, and a selection you cannot act on is worse than no selection.
+  readonly property var selectableItems: tab === "containers"
+    ? visibleContainers : tabItems
+
+  readonly property var selectedItems: Docker.selectedFrom(selectableItems, selection)
+  readonly property int selectedCount: selectedItems.length
 
   function toggleRow(id) {
     selection = Docker.toggleSelection(selection, id)
@@ -747,8 +752,43 @@ Panel {
           }
 
           Item {
-            width: parent.width - Style.space(280)
+            width: Math.max(0, parent.width - Style.space(300)
+              - (root.tab === "containers" ? Style.space(240) : 0))
             height: 1
+          }
+
+          Repeater {
+            // Containers do the four things a container does; the resource tabs
+            // only remove, because that is the only thing an image or a network
+            // can be told.
+            model: root.tab === "containers"
+              ? [
+                { key: "start", label: "iniciar" },
+                { key: "stop", label: "parar" },
+                { key: "restart", label: "reiniciar" },
+                { key: "logs", label: "logs" }
+              ]
+              : []
+
+            Chip {
+              required property var modelData
+              anchors.verticalCenter: parent.verticalCenter
+              label: modelData.label
+              foreground: root.foreground
+              dim: root.dim
+              fontFamily: root.fontFamily
+              onClicked: {
+                if (!root.service) return
+                var items = root.selectedItems
+                for (var i = 0; i < items.length; i++) {
+                  if (modelData.key === "logs")
+                    root.service.openContainerView("logs", items[i], root.monitorName)
+                  else
+                    root.service.runContainer(modelData.key, items[i])
+                }
+                root.selection = ({})
+              }
+            }
           }
 
           Chip {
@@ -756,6 +796,7 @@ Panel {
             // One confirmation naming the count and the size, not one per item:
             // a dialog that appears eleven times is a dialog nobody reads.
             label: "remover"
+            visible: root.tab !== "containers"
             foreground: bar ? bar.urgent : Color.urgent
             dim: bar ? bar.urgent : Color.urgent
             fontFamily: root.fontFamily
@@ -999,6 +1040,35 @@ Panel {
                       horizontalAlignment: Text.AlignRight
                       width: Style.space(70)
                     }
+
+                    // Acting on one row should not require selecting it first.
+                    // Selection is for doing the same thing to many; a single
+                    // row keeps its own button, the same as a container row.
+                    Row {
+                      id: resourceActions
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(2)
+                      opacity: resourceHover.containsMouse || resourceRow.checked ? 1 : 0
+
+                      Behavior on opacity { NumberAnimation { duration: 120 } }
+
+                      PanelActionButton {
+                        iconText: "󰩹"
+                        tooltipText: resourceRow.removable
+                          ? "Remover"
+                          : "Rede do próprio engine — não removível"
+                        foreground: root.dim
+                        hoverColor: bar ? bar.urgent : Color.urgent
+                        enabled: resourceRow.removable
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.askConfirm(
+                          Docker.resourceConfirmMessage([resourceRow.modelData]),
+                          "Remover",
+                          function() {
+                            if (root.service) root.service.removeResources([resourceRow.modelData])
+                          })
+                      }
+                    }
                   }
                 }
               }
@@ -1149,6 +1219,7 @@ Panel {
                     ? root.service.conflictFor(modelData.id) : null
                   readonly property bool busy: root.service
                     ? root.service.isBusy(modelData.id) : false
+                  readonly property bool checked: root.selection[modelData.id] === true
                   readonly property bool degraded:
                     modelData.cell === "bad" || modelData.cell === "warn"
                   readonly property color stateColor: modelData.cell === "bad"
@@ -1162,7 +1233,9 @@ Panel {
                   // Degraded rows are tinted so a problem is findable without
                   // reading — the same principle the mosaic runs on. Healthy
                   // rows stay plain, or the tint stops meaning anything.
-                  color: row.degraded
+                  color: row.checked
+                    ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.14)
+                    : row.degraded
                     ? Qt.rgba(row.stateColor.r, row.stateColor.g, row.stateColor.b, 0.16)
                     : (rowHover.containsMouse
                       ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
@@ -1198,13 +1271,38 @@ Panel {
                     anchors.rightMargin: Style.space(6)
                     spacing: Style.space(6)
 
-                    Rectangle {
+                    // The state dot doubles as the checkbox: hovering turns it
+                    // into one, so the row gains nothing permanent and the
+                    // state is never hidden behind a control.
+                    Item {
                       anchors.verticalCenter: parent.verticalCenter
-                      width: Style.space(5)
-                      height: Style.space(5)
-                      radius: width / 2
-                      color: row.stateColor
-                      opacity: row.modelData.cell === "idle" ? 0.35 : 1
+                      width: Style.space(9)
+                      height: Style.space(9)
+
+                      Rectangle {
+                        anchors.centerIn: parent
+                        width: Style.space(5)
+                        height: Style.space(5)
+                        radius: width / 2
+                        visible: !rowHover.containsMouse && !row.checked
+                        color: row.stateColor
+                        opacity: row.modelData.cell === "idle" ? 0.35 : 1
+                      }
+
+                      Text {
+                        anchors.centerIn: parent
+                        visible: rowHover.containsMouse || row.checked
+                        text: row.checked ? "󰄲" : "󰄱"
+                        color: row.checked ? Color.accent : root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleRow(row.modelData.id)
+                      }
                     }
 
                     Text {
