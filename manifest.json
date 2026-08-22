@@ -38,7 +38,8 @@
       "cellSize": 4,
       "stackGap": 3,
       "groupStacks": true,
-      "maxWidth": 160
+      "maxWidth": 160,
+      "notifications": true
     },
     "schema": [
       {
@@ -149,6 +150,13 @@
         "type": "boolean",
         "label": "Sample CPU/memory on battery",
         "defaultValue": false
+      },
+      {
+        "key": "notifications",
+        "type": "boolean",
+        "label": "Desktop notifications",
+        "description": "When a container turns unhealthy, starts looping on restart, or exits with an error — and once when it recovers.",
+        "defaultValue": true
       },
       {
         "key": "pollIntervalMs",

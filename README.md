@@ -90,8 +90,58 @@ the popup entirely.
 **In the popup**
 
 Stacks come first if they are degraded. A stack starts, stops and restarts as a
-unit, or opens lazydocker scoped to itself. Each container gets logs, a shell,
-start/stop, restart, and one button that hands its log to your coding agent.
+unit, or opens lazydocker scoped to itself.
+
+Each container offers only what its state allows — no start button on something
+already up, no remove on something running — from logs, a shell, unpause,
+start/stop, restart, remove, and one button that hands its log to your coding
+agent. Published ports are clickable and open `http://localhost:<port>`.
+
+**Starting a stack runs `compose up -d`, not `compose start`.** `start` cannot
+bring back a container that was removed and ignores edits to the compose file,
+which is not what anyone means by "start this stack". Stopping stays `stop` —
+never `down`, which would delete the containers and their networks.
+
+## Reclaiming disk
+
+At the bottom of the popup, what Docker is holding that you could get back,
+broken out by kind, each with its own button and its own confirmation:
+
+| | |
+|---|---|
+| build cache | `docker builder prune -f` — rebuilt on the next build |
+| dangling images | `docker image prune -f` — untagged layers from rebuilds |
+| unused images | `docker image prune -a -f` — pulled again when needed |
+| stopped containers | `docker container prune -f` — their logs go too |
+| volumes | listed, never pruned from here |
+
+Two details other panels get wrong and this one does not:
+
+**The number next to "unused images" belongs to `prune -a`, not `prune`.**
+`docker system df` reports as reclaimable every image no container is using —
+which is what `image prune -a` removes. Plain `image prune` takes only dangling
+layers and frees far less. Showing one number and running the other command
+makes the panel a liar, so they are separate rows.
+
+**Dangling images show a dash, not `0B`.** `system df` has no row for them, and
+printing zero would read as "nothing to do" when there may be plenty.
+
+**Volumes are shown and never pruned.** Everything else on that list can be
+rebuilt or pulled again. A volume is the one thing that is somebody's data, and
+a one-click button is the wrong shape for deleting it. Use `docker volume prune`
+in a terminal if you mean it.
+
+## Notifications
+
+When a container turns unhealthy, starts looping on restart, or exits with an
+error, you get a desktop notification — and one quiet one when it recovers.
+
+It compares snapshots rather than following the event stream, because events
+fire for every intermediate step of a restart and the only thing worth
+interrupting someone for is where the container ended up. The first read after
+the shell starts is silent, so a restart never announces everything at once. A
+container someone stopped cleanly and started again is not a recovery, and says
+nothing.
 
 ## Asking the agent
 
@@ -193,10 +243,37 @@ is 30 seconds for a reason.
 node test_docker.js
 ```
 
-79 checks, no framework, no network, no daemon. `fixtures/` holds real
+95 checks, no framework, no network, no daemon. `fixtures/` holds real
 `docker ps` and `docker stats` output; the tests run against that.
 
 See `CLAUDE.md` for how the pieces fit and what has already bitten.
+
+## Security
+
+The plugin runs entirely as you. There is no root, no polkit, no setuid: it
+calls the `docker` CLI, which works because your user is in the `docker` group.
+That group is root-equivalent on the host — if you have it, this plugin can do
+what you can do, and nothing more.
+
+Deliberate choices, rather than accidents:
+
+- **Nothing destructive without a named confirmation.** Removing a container and
+  every prune button state what will be removed and how much, because "are you
+  sure?" teaches people to click yes.
+- **Volumes are never pruned from the panel.**
+- **No forced removal.** Remove is offered only on containers that are already
+  stopped; a button that quietly runs `rm -f` eventually deletes something
+  someone was using.
+- **Image labels are treated as hostile.** `com.docker.compose.project` and
+  `.service` are rendered as the stack and service names, and any image can set
+  them to anything — a pulled image is not a trusted source. Every label-derived
+  string is rendered as plain text, so a crafted one cannot be interpreted as
+  markup, and every one that reaches a shell is quoted.
+- **Container logs are written with `umask 077`** into a directory checked to be
+  yours, because logs routinely carry connection strings and tokens. The agent
+  handoff writes there; nothing else reads it.
+
+Found something? Open an issue.
 
 ## License
 

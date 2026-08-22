@@ -58,6 +58,7 @@ Item {
     openPollIntervalMs = Math.max(1000, Number(settings.openPollIntervalMs || 3000))
     statsIntervalMs = Math.max(10000, Number(settings.statsIntervalMs || 30000))
     statsOnBattery = settings.statsOnBattery === true
+    notificationsEnabled = settings.notifications !== false
     logTail = Math.max(20, Number(settings.logTail || 200))
   }
 
@@ -143,7 +144,10 @@ Item {
 
     root.daemonOk = true
     root.errorText = ""
-    root.containers = Docker.parsePs(text)
+
+    var next = Docker.parsePs(text)
+    root.announceChanges(next)
+    root.containers = next
   }
 
   function describeFailure(exitCode) {
@@ -255,6 +259,90 @@ Item {
     onTriggered: root.sampleStats()
   }
 
+  // --------------------------------------------------------- disk usage
+  //
+  // Sampled when the popup opens rather than on a timer: nobody needs to know
+  // how much build cache they have until they are looking at the panel, and
+  // `docker system df` walks the whole image store to find out.
+
+  property var dfRows: []
+  readonly property var pruneTargets: Docker.pruneTargets(dfRows)
+  readonly property real reclaimable: Docker.totalReclaimable(dfRows)
+  readonly property var volumesRow: Docker.dfRow(dfRows, "Local Volumes")
+
+  function sampleDf() {
+    if (dfProcess.running || !daemonOk) return
+    dfProcess.command = Docker.systemDfCommand()
+    dfProcess.running = true
+  }
+
+  onOpenPanelsChanged: if (openPanels > 0) sampleDf()
+
+  Process {
+    id: dfProcess
+
+    property string pendingText: ""
+    property bool textReady: false
+    property bool exitReady: false
+    property int lastExit: 0
+
+    function applyWhenComplete() {
+      if (!textReady || !exitReady) return
+      textReady = false
+      exitReady = false
+      if (lastExit === 0) root.dfRows = Docker.parseSystemDf(pendingText)
+    }
+
+    stdout: StdioCollector {
+      id: dfStdout
+      waitForEnd: true
+      onStreamFinished: {
+        dfProcess.pendingText = dfStdout.text
+        dfProcess.textReady = true
+        dfProcess.applyWhenComplete()
+      }
+    }
+
+    onExited: function(exitCode) {
+      dfProcess.lastExit = exitCode
+      dfProcess.exitReady = true
+      dfProcess.applyWhenComplete()
+    }
+  }
+
+  function prune(target) {
+    if (isBusy(target.id)) return
+    markBusy(target.id, "prune")
+    actionQueue.push({ key: target.id, command: target.command, resample: true })
+    pump()
+  }
+
+  // ------------------------------------------------------- notifications
+
+  property bool notificationsEnabled: true
+  // The previous snapshot, kept only to diff against. Empty on the first read,
+  // which is what stops a shell restart from announcing everything at once.
+  property var previousContainers: []
+  property bool seenFirstSnapshot: false
+
+  function announceChanges(next) {
+    if (!seenFirstSnapshot) {
+      seenFirstSnapshot = true
+      previousContainers = next
+      return
+    }
+
+    if (notificationsEnabled) {
+      var changes = Docker.stateChanges(previousContainers, next)
+      for (var i = 0; i < changes.length; i++) {
+        var notification = Docker.changeNotification(changes[i])
+        if (notification) Quickshell.execDetached(Docker.notifyCommand(notification))
+      }
+    }
+
+    previousContainers = next
+  }
+
   // ----------------------------------------------------------- actions
 
   function markBusy(key, action) {
@@ -275,12 +363,24 @@ Item {
     pump()
   }
 
+  function removeContainer(container) {
+    if (isBusy(container.id)) return
+    markBusy(container.id, "rm")
+    actionQueue.push({ key: container.id, command: Docker.removeCommand(container.id), resample: true })
+    pump()
+  }
+
+  function openPort(port, monitor) {
+    focusMonitor(monitor)
+    openUrl(Docker.portUrl(port))
+  }
+
   function runStack(action, group) {
     if (isBusy(group.project)) return
     markBusy(group.project, action)
     actionQueue.push({
       key: group.project,
-      command: Docker.stackCommand(action, group.project, root.hasCompose && !group.loose, group.containers)
+      command: Docker.stackCommand(action, group, root.hasCompose)
     })
     pump()
   }
@@ -288,10 +388,13 @@ Item {
   property var actionQueue: []
   property string actionKey: ""
 
+  property bool actionResamples: false
+
   function pump() {
     if (actionProcess.running || actionQueue.length === 0) return
     var next = actionQueue.shift()
     actionKey = next.key
+    actionResamples = next.resample === true
     actionProcess.command = next.command
     actionProcess.running = true
   }
@@ -305,6 +408,10 @@ Item {
       // No optimistic update: a restart can fail, and the screen would be
       // lying until the next poll. The truth arrives via docker events.
       root.refresh()
+      // A prune or a remove changes what is on disk, and the panel is showing
+      // the old number until this lands.
+      if (root.actionResamples) root.sampleDf()
+      root.actionResamples = false
       root.pump()
     }
   }

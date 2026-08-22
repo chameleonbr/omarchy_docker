@@ -234,6 +234,32 @@ Panel {
     }
   }
 
+  // Anything that deletes goes through here. The message says what will be
+  // removed and how much, because "are you sure?" teaches people to click yes.
+  property var pendingConfirm: null
+
+  function askConfirm(message, confirmText, action) {
+    pendingConfirm = action
+    confirmDialog.message = message
+    confirmDialog.confirmText = confirmText
+    confirmDialog.opened = true
+  }
+
+  ConfirmDialog {
+    id: confirmDialog
+    cancelText: "Cancelar"
+    onConfirmed: {
+      var action = root.pendingConfirm
+      root.pendingConfirm = null
+      confirmDialog.opened = false
+      if (action) action()
+    }
+    onCanceled: {
+      root.pendingConfirm = null
+      confirmDialog.opened = false
+    }
+  }
+
   function widgetOnMonitor(monitor) {
     if (!monitor || !bar || typeof bar.moduleWidgets !== "function") return null
     var widgets = bar.moduleWidgets(root.moduleName) || []
@@ -365,7 +391,7 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    contentWidth: card.fittedContentWidth(Style.space(580))
+    contentWidth: card.fittedContentWidth(Style.space(640))
     contentHeight: card.fittedContentHeight(list.implicitHeight, Style.space(760))
 
     Flickable {
@@ -466,6 +492,10 @@ Panel {
               Text {
                 anchors.verticalCenter: parent.verticalCenter
                 text: modelData.project
+                // Plain text, always: `service` and `project` come from image
+                // labels, which any image can set to anything. Qt's AutoText
+                // would parse a crafted one as rich text.
+                textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -535,8 +565,11 @@ Panel {
               model: modelData.containers
 
               Row {
+                id: portRow
                 required property var modelData
 
+                readonly property var containerData: modelData
+                readonly property var actions: Docker.containerActions(modelData)
                 readonly property var sample: root.service
                   ? root.service.statsFor(modelData.id) : null
                 readonly property bool busy: root.service
@@ -560,6 +593,7 @@ Panel {
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
                   text: modelData.service
+                  textFormat: Text.PlainText
                   color: root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -570,11 +604,44 @@ Panel {
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
                   text: modelData.status
+                  textFormat: Text.PlainText
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   elide: Text.ElideRight
                   width: Style.space(88)
+                }
+
+                // A published port is something to open, not to read out.
+                Row {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(64)
+                  spacing: Style.space(4)
+
+                  Repeater {
+                    model: modelData.ports.slice(0, 2)
+
+                    Text {
+                      required property var modelData
+                      readonly property var container: portRow.containerData
+
+                      text: modelData
+                      textFormat: Text.PlainText
+                      color: portMouse.containsMouse ? Color.accent : root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.underline: portMouse.containsMouse
+
+                      MouseArea {
+                        id: portMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: if (root.service)
+                          root.service.openPort(parent.text, root.monitorName)
+                      }
+                    }
+                  }
                 }
 
                 Text {
@@ -588,7 +655,7 @@ Panel {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   horizontalAlignment: Text.AlignRight
-                  width: Style.space(92)
+                  width: Style.space(88)
                 }
 
                 Row {
@@ -620,21 +687,34 @@ Panel {
                     tooltipText: "Shell no container"
                     foreground: root.dim
                     hoverColor: root.foreground
-                    enabled: modelData.state === "running"
-                    opacity: enabled ? 1 : 0.4
+                    visible: portRow.actions.canShell
                     onClicked: if (root.service) root.service.openContainerView("shell", modelData, root.monitorName)
                   }
 
                   PanelActionButton {
-                    iconText: modelData.state === "running" ? "󰓛" : "󰐊"
-                    tooltipText: modelData.state === "running" ? "Parar" : "Iniciar"
+                    iconText: "󰐊"
+                    tooltipText: "Despausar"
                     foreground: root.dim
                     hoverColor: root.foreground
+                    visible: portRow.actions.canUnpause
+                    enabled: !busy
+                    onClicked: if (root.service) root.service.runContainer("unpause", modelData)
+                  }
+
+                  PanelActionButton {
+                    // Only the action the container can actually take: a start
+                    // button on something that is already up teaches people
+                    // that the buttons are decoration.
+                    iconText: portRow.actions.canStop ? "󰓛" : "󰐊"
+                    tooltipText: portRow.actions.canStop ? "Parar" : "Iniciar"
+                    foreground: root.dim
+                    hoverColor: root.foreground
+                    visible: (portRow.actions.canStop || portRow.actions.canStart)
+                      && !portRow.actions.canUnpause
                     enabled: !busy
                     onClicked: {
                       if (!root.service) return
-                      root.service.runContainer(
-                        modelData.state === "running" ? "stop" : "start", modelData)
+                      root.service.runContainer(portRow.actions.canStop ? "stop" : "start", modelData)
                     }
                   }
 
@@ -643,11 +723,150 @@ Panel {
                     tooltipText: "Reiniciar"
                     foreground: root.dim
                     hoverColor: root.foreground
+                    visible: portRow.actions.canRestart
                     enabled: !busy
                     onClicked: if (root.service) root.service.runContainer("restart", modelData)
                   }
+
+                  PanelActionButton {
+                    iconText: "󰩹"
+                    tooltipText: "Remover o container"
+                    foreground: root.dim
+                    hoverColor: bar ? bar.urgent : Color.urgent
+                    visible: portRow.actions.canRemove
+                    enabled: !busy
+                    onClicked: root.askConfirm(
+                      Docker.removeConfirmMessage(modelData),
+                      "Remover",
+                      function() { if (root.service) root.service.removeContainer(modelData) })
+                  }
                 }
               }
+            }
+          }
+        }
+        // -------------------------------------------------- clean up
+
+        Column {
+          width: list.width
+          spacing: Style.space(2)
+          visible: root.daemonOk && root.service && root.service.dfRows.length > 0
+
+          PanelSeparator { width: parent.width }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Espaço recuperável"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              width: parent.width - reclaimTotal.implicitWidth - Style.space(6)
+              elide: Text.ElideRight
+            }
+
+            Text {
+              id: reclaimTotal
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.service ? Docker.formatBytes(root.service.reclaimable) : ""
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          Repeater {
+            model: root.service ? root.service.pruneTargets : []
+
+            Row {
+              required property var modelData
+
+              readonly property bool busy: root.service
+                ? root.service.isBusy(modelData.id) : false
+              readonly property bool worthIt: modelData.reclaimable !== 0
+
+              width: list.width
+              spacing: Style.space(6)
+              leftPadding: Style.space(12)
+              opacity: worthIt ? 1 : 0.4
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: modelData.label
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                width: Style.space(150)
+                elide: Text.ElideRight
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                // A dash where the size is not knowable: `system df` has no row
+                // for dangling images, and printing 0B there would read as
+                // "nothing to do" when there may be plenty.
+                text: modelData.reclaimable >= 0
+                  ? Docker.formatBytes(modelData.reclaimable) : "—"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                horizontalAlignment: Text.AlignRight
+                width: Style.space(80)
+              }
+
+              PanelActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "󰩹"
+                tooltipText: modelData.detail
+                foreground: root.dim
+                hoverColor: root.foreground
+                enabled: !busy && worthIt
+                opacity: enabled ? 1 : 0.4
+                onClicked: root.askConfirm(
+                  Docker.pruneConfirmMessage(modelData),
+                  "Limpar",
+                  function() { if (root.service) root.service.prune(modelData) })
+              }
+            }
+          }
+
+          Row {
+            width: list.width
+            spacing: Style.space(6)
+            leftPadding: Style.space(12)
+            visible: root.service && root.service.volumesRow
+
+            Text {
+              text: "volumes"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              width: Style.space(150)
+            }
+
+            Text {
+              text: root.service && root.service.volumesRow
+                ? Docker.formatBytes(root.service.volumesRow.reclaimable) : ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignRight
+              width: Style.space(80)
+            }
+
+            Text {
+              // Listed, never pruned from here. Everything above can be rebuilt
+              // or pulled again; a volume is the one thing that is data.
+              text: "não removido daqui"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.italic: true
             }
           }
         }

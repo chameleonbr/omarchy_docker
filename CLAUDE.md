@@ -38,7 +38,7 @@ grim -g "<x>,<y> <w>x30" - | magick - -scale 800% /tmp/bar.png
 
 ## Checks
 
-`node test_docker.js` — 79 checks, plain node, no framework, no network, no daemon.
+`node test_docker.js` — 95 checks, plain node, no framework, no network, no daemon.
 
 `Docker.js` is a QML `.js` resource and cannot carry `export`, so the test file
 `eval`s it into scope. Keep `Docker.js` free of QML types (`Process`, `Timer`,
@@ -207,6 +207,40 @@ shell every time you run `docker compose up`. Do not merge them.
   rectangles, not nerd-font icons, because a missing glyph renders as nothing
   and the widget looks broken rather than empty.
 
+## Disk cleanup
+
+`docker system df` is sampled when the popup opens, not on a timer: nobody needs
+to know how much build cache they have until they are looking at it, and finding
+out walks the whole image store.
+
+**The df row and the prune command are not one to one, and the obvious reading
+is wrong.** df's Reclaimable for Images counts every image no container uses,
+which is what `image prune -a` removes; plain `image prune` takes only dangling
+layers. Pairing the number with the wrong command makes the panel a liar. They
+are separate entries in `PRUNE_TARGETS`, and dangling images carry
+`reclaimable: -1` — unknown, not zero, because `0B` would read as nothing to do.
+
+**Volumes stay out of `PRUNE_TARGETS` permanently.** Everything else on that
+list can be rebuilt or pulled again. There is a test asserting no target
+mentions volumes; do not "complete" the list.
+
+## Trust model
+
+The plugin runs as the user, through the `docker` group. No root, no polkit.
+
+**Image labels are hostile input.** `com.docker.compose.project` and `.service`
+come from labels, and any image can set them to anything — Docker rejects a `<`
+in a container *name*, but a label takes it happily. Every Text that renders a
+label-derived string sets `textFormat: Text.PlainText`; without it Qt's
+`AutoText` parses a crafted value as rich text.
+
+Everything that reaches a shell goes through `shellQuote`. This was verified
+against the real launcher, not in the abstract: `omarchy-launch-or-focus`
+rebuilds argv into a string and `eval`s it, and single-quoting survives that —
+but only because the value arrives as an argument. A quick mental repro that
+inlines the payload into the assignment "proves" an injection that does not
+exist. Test through the actual script.
+
 ## Agent handoff
 
 `bin/omarchy-docker-ask-agent` follows `omarchy-agent-crash`: gather facts, write
@@ -218,6 +252,10 @@ set — Omarchy deliberately picks none for you, so the empty case is normal and
 gets a notification, not an error nobody sees. The widget runs the script
 detached, so `stderr` goes nowhere a user will look; `notify-send` is the only
 channel that reaches them.
+
+The script runs `umask 077` and verifies the log directory is a real directory
+it owns: logs routinely carry connection strings and tokens, and the `/tmp`
+fallback is a shared directory where a planted symlink would redirect the write.
 
 `docker logs` is captured with `2>&1` on purpose: container errors overwhelmingly
 arrive on stderr, and splitting the streams hides the interesting half.

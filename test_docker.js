@@ -629,50 +629,86 @@ check("containers are always addressed by id", () => {
   assert.deepStrictEqual(containerCommand("stop", "abc123"), ["docker", "stop", "abc123"])
 })
 
-check("stack actions use compose when it is available", () => {
-  assert.deepStrictEqual(
-    stackCommand("restart", "web-shop", true, []),
-    ["docker", "compose", "-p", "web-shop", "restart"])
+check("starting a stack is not the mirror of stopping it", () => {
+  // `compose start` cannot bring back a removed container and ignores edits to
+  // the compose file; `up -d` does both, which is what "start this stack"
+  // means. Stopping stays `stop` — `down` would delete the containers.
+  const group = {
+    project: "web-shop", loose: false,
+    workingDir: "/srv/stacks/web-shop",
+    configFiles: ["/srv/stacks/web-shop/compose.yml"],
+    containers: [{ id: "a" }]
+  }
+
+  const start = stackCommand("start", group, true)
+  assert.deepStrictEqual(start.slice(-2), ["up", "-d"])
+  assert.ok(start.includes("--project-directory"), "compose is told where to look")
+  assert.ok(start.includes("'/srv/stacks/web-shop/compose.yml'"))
+
+  assert.deepStrictEqual(stackCommand("stop", group, true).slice(-1), ["stop"])
+  assert.deepStrictEqual(stackCommand("restart", group, true).slice(-1), ["restart"])
+
+  for (const action of ["start", "stop", "restart"]) {
+    assert.ok(!stackCommand(action, group, true).includes("down"), "never down")
+  }
 })
 
-check("a stack starts and stops as a unit", () => {
-  assert.deepStrictEqual(
-    stackCommand("stop", "web-shop", true, []),
-    ["docker", "compose", "-p", "web-shop", "stop"])
-  assert.deepStrictEqual(
-    stackCommand("start", "web-shop", true, []),
-    ["docker", "compose", "-p", "web-shop", "start"])
+check("stack paths reach compose through the launcher's eval intact", () => {
+  const group = {
+    project: "my stack", loose: false,
+    workingDir: "/srv/my stacks/web",
+    configFiles: ["/srv/my stacks/web/compose.yml"],
+    containers: []
+  }
+  const command = stackCommand("start", group, true)
+  assert.ok(command.includes("'/srv/my stacks/web'"))
+  assert.ok(command.includes("'my stack'"))
 })
 
-check("stack actions fall back to per-container ids without compose", () => {
-  assert.deepStrictEqual(
-    stackCommand("restart", "web-shop", false, [{ id: "a" }, { id: "b" }]),
-    ["docker", "restart", "a", "b"])
+check("stack actions fall back to container ids without compose", () => {
+  const loose = { loose: true, containers: [{ id: "a" }, { id: "b" }] }
+  assert.deepStrictEqual(stackCommand("start", loose, false), ["docker", "start", "a", "b"])
+  assert.deepStrictEqual(stackCommand("stop", loose, false), ["docker", "stop", "a", "b"])
 })
 
-check("the agent handoff passes facts, not a payload", () => {
-  // A few hundred lines of container output does not belong in argv; the script
-  // writes the log to a file and the prompt points at it.
-  const container = { id: "abc123", name: "web-shop-cache-1" }
-  assert.deepStrictEqual(
-    askAgentCommand("/plugins/avila.docker/bin/omarchy-docker-ask-agent", container, 400),
-    ["/plugins/avila.docker/bin/omarchy-docker-ask-agent", "abc123", "web-shop-cache-1", "400"])
+// ------------------------------------------------------ per-state actions
 
-  assert.deepStrictEqual(askAgentCommand("", container, 400), [], "no script, no launch")
-  assert.deepStrictEqual(askAgentCommand("/x", null, 400), [])
+check("a container only offers what its state allows", () => {
+  const running = containerActions({ state: "running" })
+  assert.ok(running.canStop && running.canRestart && running.canShell)
+  assert.ok(!running.canStart && !running.canRemove, "cannot remove a running container")
 
-  // The tail is always a string, because argv is strings.
-  assert.strictEqual(askAgentCommand("/x", container, 0)[3], "400", "falls back to a sane tail")
-  assert.strictEqual(typeof askAgentCommand("/x", container, 50)[3], "string")
+  const exited = containerActions({ state: "exited" })
+  assert.ok(exited.canStart && exited.canRemove)
+  assert.ok(!exited.canStop && !exited.canShell)
+
+  const restarting = containerActions({ state: "restarting" })
+  assert.ok(restarting.canStop, "a restart loop is stoppable")
+  assert.ok(!restarting.canRemove)
+  assert.ok(!restarting.canShell, "there is nothing to attach to between restarts")
 })
 
-check("the widget's monitor is focused before a window opens", () => {
-  // Clicking the bar does not move keyboard focus, so without this the terminal
-  // opens on whatever monitor was focused — usually not the one clicked, which
-  // looks exactly like nothing happening.
-  assert.deepStrictEqual(focusMonitorCommand("DP-1"), ["hyprctl", "dispatch", "focusmonitor", "DP-1"])
-  assert.deepStrictEqual(focusMonitorCommand(""), [], "no monitor, no dispatch")
-  assert.deepStrictEqual(focusMonitorCommand(null), [])
+check("a paused container counts as running", () => {
+  // It is frozen, not gone: removing it would need -f, and a button that
+  // quietly forces eventually deletes something someone was using.
+  const paused = containerActions({ state: "paused" })
+  assert.ok(paused.canUnpause)
+  assert.ok(!paused.canRemove, "never offer remove on a paused container")
+  assert.ok(!paused.canStart)
+  assert.ok(paused.canStop)
+})
+
+check("every container in the fixture gets a coherent action set", () => {
+  for (const container of parsePs(psFixture)) {
+    const actions = containerActions(container)
+    assert.ok(!(actions.canStart && actions.canStop), container.name + " is not both")
+    assert.ok(!(actions.canRemove && actions.canStop), container.name + " removable while up")
+  }
+})
+
+check("a published port becomes something you can open", () => {
+  assert.strictEqual(portUrl(8080), "http://localhost:8080")
+  assert.strictEqual(portUrl("5432"), "http://localhost:5432")
 })
 
 check("read commands have the shape the service runs", () => {
@@ -867,6 +903,161 @@ check("logs and shell windows for the same container stay distinct", () => {
   const shell = containerTuiCommand("shell", container, 200)[1]
 
   assert.notStrictEqual(logs, shell)
+})
+
+
+// --------------------------------------------------------- disk cleanup
+
+const DF_FIXTURE = [
+  '{"Active":"23","Reclaimable":"4.2GB (7%)","Size":"53.91GB","TotalCount":"32","Type":"Images"}',
+  '{"Active":"2","Reclaimable":"530.6MB (99%)","Size":"531.8MB","TotalCount":"25","Type":"Containers"}',
+  '{"Active":"14","Reclaimable":"323.1MB (14%)","Size":"2.256GB","TotalCount":"22","Type":"Local Volumes"}',
+  '{"Active":"0","Reclaimable":"221.2GB","Size":"250.2GB","TotalCount":"598","Type":"Build Cache"}'
+].join("\n")
+
+check("system df parses with and without a percentage", () => {
+  const rows = parseSystemDf(DF_FIXTURE)
+  assert.strictEqual(rows.length, 4)
+
+  const images = dfRow(rows, "Images")
+  assert.strictEqual(images.total, 32)
+  assert.strictEqual(images.active, 23)
+  assert.ok(Math.abs(images.reclaimable - 4.2e9) < 1e6, "4.2GB (7%) drops the percentage")
+
+  const cache = dfRow(rows, "Build Cache")
+  assert.ok(Math.abs(cache.reclaimable - 221.2e9) < 1e8, "bare 221.2GB parses too")
+})
+
+check("malformed df lines are skipped, not fatal", () => {
+  assert.deepStrictEqual(parseSystemDf(""), [])
+  assert.strictEqual(parseSystemDf(DF_FIXTURE + "\n{broken").length, 4)
+})
+
+check("unused images map to prune -a, dangling to plain prune", () => {
+  // df's Reclaimable for Images counts every image no container uses, which is
+  // what `image prune -a` removes. Plain `image prune` only takes dangling
+  // layers and frees far less. Showing one number and running the other command
+  // makes the widget a liar, so they are separate entries.
+  const targets = pruneTargets(parseSystemDf(DF_FIXTURE))
+  const byId = {}
+  for (const target of targets) byId[target.id] = target
+
+  assert.deepStrictEqual(byId.unusedImages.command, ["docker", "image", "prune", "-a", "-f"])
+  assert.ok(byId.unusedImages.known, "and it is the one that carries the df number")
+
+  assert.deepStrictEqual(byId.danglingImages.command, ["docker", "image", "prune", "-f"])
+  assert.strictEqual(byId.danglingImages.known, false)
+  assert.strictEqual(byId.danglingImages.reclaimable, -1,
+    "unknown, not zero — 0B would read as nothing to do")
+})
+
+check("volumes are never in the prune list", () => {
+  // Everything offered can be rebuilt or pulled again. A volume is the one
+  // thing that is somebody's data.
+  const targets = pruneTargets(parseSystemDf(DF_FIXTURE))
+  for (const target of targets) {
+    assert.ok(!/volume/i.test(target.label), target.label)
+    assert.ok(!target.command.includes("volume"), target.command.join(" "))
+  }
+  assert.ok(VOLUMES_ARE_NOT_PRUNED.length > 0, "and the panel says why")
+})
+
+check("every prune command is non-interactive and scoped", () => {
+  for (const target of pruneTargets(parseSystemDf(DF_FIXTURE))) {
+    assert.strictEqual(target.command[0], "docker")
+    assert.ok(target.command.includes("-f"), target.id + " must not stop to ask")
+    assert.ok(!target.command.includes("system"), target.id + " never `system prune`")
+  }
+})
+
+check("the total counts only what a button can actually reclaim", () => {
+  const rows = parseSystemDf(DF_FIXTURE)
+  const total = totalReclaimable(rows)
+  const volumes = dfRow(rows, "Local Volumes").reclaimable
+
+  assert.ok(total > 200e9, "the build cache dominates")
+  assert.ok(Math.abs(total - (221.2e9 + 4.2e9 + 530.6e6)) < 1e8)
+  assert.ok(total < 226e9 + volumes, "volumes are not promised")
+})
+
+check("the confirmation names the thing and the size", () => {
+  const target = pruneTargets(parseSystemDf(DF_FIXTURE)).find(t => t.id === "buildCache")
+  const message = pruneConfirmMessage(target)
+
+  assert.ok(message.indexOf("build cache") > 0)
+  assert.ok(message.indexOf("221GB") > 0, "the number is the reason to click")
+
+  const unknown = pruneConfirmMessage({ label: "dangling images", reclaimable: -1, detail: "x" })
+  assert.ok(unknown.indexOf("(") < 0, "no size invented when it is not known")
+})
+
+// -------------------------------------------------------- state changes
+
+function containersWith(overrides) {
+  return parsePs(psFixture).map(container =>
+    overrides[container.name]
+      ? Object.assign({}, container, overrides[container.name])
+      : container)
+}
+
+check("nothing changing produces no noise", () => {
+  const containers = parsePs(psFixture)
+  assert.deepStrictEqual(stateChanges(containers, containers), [])
+})
+
+check("a container going bad is worth interrupting for", () => {
+  const before = containersWith({ "web-shop-cache-1": { state: "running", cell: "ok" } })
+  const after = containersWith({
+    "web-shop-cache-1": { state: "running", health: "unhealthy", cell: "warn" }
+  })
+
+  const changes = stateChanges(before, after)
+  assert.strictEqual(changes.length, 1)
+  assert.strictEqual(changes[0].kind, "unhealthy")
+  assert.strictEqual(changeNotification(changes[0]).urgency, "critical")
+})
+
+check("a restart loop reports as a loop, not as a failure", () => {
+  const before = containersWith({ "web-shop-proxy-1": { state: "running", cell: "ok" } })
+  const after = containersWith({ "web-shop-proxy-1": { state: "restarting", cell: "warn" } })
+
+  assert.strictEqual(stateChanges(before, after)[0].kind, "restarting")
+})
+
+check("recovery is announced once, and quietly", () => {
+  const before = containersWith({ "web-shop-cache-1": { state: "exited", cell: "bad" } })
+  const after = containersWith({ "web-shop-cache-1": { state: "running", cell: "ok" } })
+
+  const change = stateChanges(before, after)[0]
+  assert.strictEqual(change.kind, "recovered")
+  assert.strictEqual(changeNotification(change).urgency, "low")
+
+  // And not again on the next round, because nothing changed.
+  assert.deepStrictEqual(stateChanges(after, after), [])
+})
+
+check("a container someone just started is not a recovery", () => {
+  // It was stopped cleanly, so there was nothing to recover from.
+  const before = containersWith({ "web-shop-migrate-1": { state: "exited", cell: "idle" } })
+  const after = containersWith({ "web-shop-migrate-1": { state: "running", cell: "ok" } })
+
+  assert.deepStrictEqual(stateChanges(before, after), [])
+})
+
+check("containers that appear are not news", () => {
+  const before = parsePs(psFixture).slice(1)
+  const after = parsePs(psFixture)
+  assert.deepStrictEqual(stateChanges(before, after), [])
+})
+
+check("notifications carry the container name and reach the user", () => {
+  const change = { container: { name: "web-shop-api-1" }, kind: "unhealthy" }
+  const notification = changeNotification(change)
+  const command = notifyCommand(notification)
+
+  assert.strictEqual(command[0], "notify-send")
+  assert.ok(command.includes("web-shop-api-1"))
+  assert.ok(command.includes("critical"))
 })
 
 console.log(passed + " checks passed")

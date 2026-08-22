@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+# Container logs routinely carry connection strings, tokens and stack traces.
+# Everything this script writes is for one person to read.
+umask 077
+
 id=${1:?usage: omarchy-docker-ask-agent <container-id> [name] [tail]}
 name=${2:-$id}
 tail_lines=${3:-400}
@@ -40,9 +44,18 @@ project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.pr
 service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id" 2>/dev/null || true)
 workdir=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$id" 2>/dev/null || true)
 
+# XDG_RUNTIME_DIR is private to the user and cleaned at logout, which is where
+# this belongs. The /tmp fallback is shared, so the directory is created with
+# restrictive permissions and refused if it already exists as something we do
+# not own — otherwise a symlink planted there would redirect the log.
 log_dir="${XDG_RUNTIME_DIR:-/tmp}/omarchy-docker"
-mkdir -p "$log_dir"
+mkdir -p -m 700 "$log_dir" 2>/dev/null || true
+[[ -d $log_dir && ! -L $log_dir && -O $log_dir ]] ||
+  fail "Não vou escrever em $log_dir: não é um diretório meu"
+
 log_file="$log_dir/${name//[^a-zA-Z0-9_-]/_}.log"
+# Never write through an existing symlink.
+[[ -L $log_file ]] && rm -f "$log_file"
 
 # Both streams: container errors overwhelmingly arrive on stderr, and splitting
 # them here would hide the interesting half.

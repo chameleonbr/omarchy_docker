@@ -741,6 +741,139 @@ function formatBytes(bytes) {
   return (value >= 100 ? Math.round(value) : Math.round(value * 10) / 10) + units[index]
 }
 
+// ------------------------------------------------------------- disk usage
+
+// `docker system df --format '{{json .}}'` reports one row per resource type,
+// with Reclaimable as human text: "4.2GB (7%)" or, for build cache, "221.2GB".
+function parseSystemDf(stdout) {
+  var lines = String(stdout || "").split("\n")
+  var rows = []
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    if (!line) continue
+
+    var raw
+    try {
+      raw = JSON.parse(line)
+    } catch (error) {
+      continue
+    }
+
+    var reclaimable = String(raw.Reclaimable || "")
+    rows.push({
+      type: String(raw.Type || ""),
+      total: Number(raw.TotalCount) || 0,
+      active: Number(raw.Active) || 0,
+      size: parseBytes(raw.Size),
+      // "4.2GB (7%)" -> the bytes are everything before the parenthesis.
+      reclaimable: parseBytes(reclaimable.split(" (")[0])
+    })
+  }
+
+  return rows
+}
+
+function dfRow(rows, type) {
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].type === type) return rows[i]
+  }
+  return null
+}
+
+// What the widget offers to reclaim.
+//
+// The mapping from `system df` to a prune command is not one to one, and the
+// obvious reading is wrong: df's Reclaimable for Images counts every image no
+// container is using, which is what `image prune -a` removes — plain
+// `image prune` only takes dangling layers and will free far less than the
+// number on screen. Showing one and running the other makes the widget a liar,
+// so the two are separate entries.
+//
+// Volumes are listed and never pruned. Everything else here can be rebuilt or
+// re-pulled; a volume is the one thing that is somebody's data.
+var PRUNE_TARGETS = [
+  {
+    id: "buildCache",
+    label: "build cache",
+    dfType: "Build Cache",
+    command: ["docker", "builder", "prune", "-f"],
+    risk: "safe",
+    detail: "Rebuilt on the next build."
+  },
+  {
+    id: "danglingImages",
+    label: "dangling images",
+    dfType: null,
+    command: ["docker", "image", "prune", "-f"],
+    risk: "safe",
+    detail: "Untagged layers left behind by rebuilds."
+  },
+  {
+    id: "unusedImages",
+    label: "unused images",
+    dfType: "Images",
+    command: ["docker", "image", "prune", "-a", "-f"],
+    risk: "rebuildable",
+    detail: "Every image no container uses. They will be pulled again when needed."
+  },
+  {
+    id: "stoppedContainers",
+    label: "stopped containers",
+    dfType: "Containers",
+    command: ["docker", "container", "prune", "-f"],
+    risk: "rebuildable",
+    detail: "Their logs and filesystem changes go with them."
+  }
+]
+
+var VOLUMES_ARE_NOT_PRUNED =
+  "Volumes are listed but never pruned from here: everything else on this list "
+  + "can be rebuilt or pulled again, and a volume is the one thing that is "
+  + "somebody's data. Use `docker volume prune` in a terminal if you mean it."
+
+function pruneTargets(dfRows) {
+  var out = []
+
+  for (var i = 0; i < PRUNE_TARGETS.length; i++) {
+    var target = PRUNE_TARGETS[i]
+    var row = target.dfType ? dfRow(dfRows, target.dfType) : null
+    out.push({
+      id: target.id,
+      label: target.label,
+      command: target.command,
+      risk: target.risk,
+      detail: target.detail,
+      // Unknown, not zero: dangling images have no row of their own in
+      // `system df`, and claiming 0B would read as "nothing to do".
+      reclaimable: row ? row.reclaimable : -1,
+      known: !!row
+    })
+  }
+
+  return out
+}
+
+function totalReclaimable(dfRows) {
+  var total = 0
+  for (var i = 0; i < PRUNE_TARGETS.length; i++) {
+    var row = PRUNE_TARGETS[i].dfType ? dfRow(dfRows, PRUNE_TARGETS[i].dfType) : null
+    if (row) total += row.reclaimable
+  }
+  return total
+}
+
+function systemDfCommand() {
+  return ["docker", "system", "df", "--format", "{{json .}}"]
+}
+
+// Spelled out rather than "are you sure": the number is the reason to click and
+// the wording is the only thing standing between a tidy-up and a surprise.
+function pruneConfirmMessage(target) {
+  var size = target.reclaimable >= 0 ? " (" + formatBytes(target.reclaimable) + ")" : ""
+  return "Remove " + target.label + size + "?\n" + target.detail
+}
+
 // -------------------------------------------------------------- commands
 
 function psCommand() {
@@ -761,12 +894,71 @@ function containerCommand(action, id) {
   return ["docker", action, id]
 }
 
-function stackCommand(action, project, hasCompose, containers) {
-  if (hasCompose) return ["docker", "compose", "-p", project, action]
+// Starting a stack is not the mirror image of stopping one.
+//
+// `compose start` only starts containers that still exist: it cannot bring back
+// one that was removed, and it ignores edits to the compose file. `up -d` does
+// both, which is what someone means by "start this stack". Stopping stays
+// `stop` — never `down`, which would delete the containers and their networks.
+function stackCommand(action, group, hasCompose) {
+  var containers = (group && group.containers) || []
 
-  var command = ["docker", action]
-  for (var i = 0; i < containers.length; i++) command.push(containers[i].id)
-  return command
+  if (hasCompose && group && group.project && !group.loose) {
+    var command = ["docker", "compose"]
+
+    // Compose needs to find the project's files; the labels record where they
+    // were. Without this it looks in the current directory and finds nothing.
+    if (group.workingDir) command.push("--project-directory", shellQuote(group.workingDir))
+    var files = group.configFiles || []
+    for (var f = 0; f < files.length; f++) command.push("-f", shellQuote(files[f]))
+    command.push("-p", shellQuote(group.project))
+
+    if (action === "start") command.push("up", "-d")
+    else command.push(action)
+
+    return command
+  }
+
+  var fallback = ["docker", action === "start" ? "start" : action]
+  for (var i = 0; i < containers.length; i++) fallback.push(containers[i].id)
+  return fallback
+}
+
+// Which actions a container can take right now. Offering "start" on a running
+// container, or "remove" on one that is up, is how a panel teaches people that
+// its buttons are decoration.
+function containerActions(container) {
+  var state = String(container.state || "")
+  // Paused counts as running: the process is still there, just frozen. Offering
+  // "remove" on it would need `rm -f`, and a button that quietly forces is a
+  // button that eventually deletes something someone was using.
+  var running = state === "running" || state === "restarting" || state === "paused"
+
+  return {
+    canStart: !running && state !== "removing",
+    canStop: running,
+    canRestart: running,
+    canUnpause: state === "paused",
+    canShell: state === "running",
+    // Removing a running container needs -f, and a button that quietly forces
+    // is a button that eventually deletes something someone was using.
+    canRemove: !running && state !== "removing"
+  }
+}
+
+function removeCommand(id) {
+  return ["docker", "rm", id]
+}
+
+function removeConfirmMessage(container) {
+  return "Remove " + container.name + "?\n"
+    + "The container and its logs go with it. The image stays."
+}
+
+// A published port is a thing you want to open, not read out. Only ports bound
+// on the host are offered — an internal port has nothing to click.
+function portUrl(port) {
+  return "http://localhost:" + String(port)
 }
 
 // ------------------------------------------------------------ lazydocker
@@ -871,6 +1063,67 @@ function focusMonitorCommand(monitor) {
 
 function logsCommand(id, tail) {
   return "docker logs -f --tail " + (Number(tail) || 200) + " " + id
+}
+
+// ---------------------------------------------------------- state changes
+//
+// What is worth interrupting someone for. Computed by comparing two snapshots
+// rather than by watching the event stream: events fire for every intermediate
+// step of a restart, and the only thing worth a notification is where a
+// container ended up.
+function stateChanges(before, after) {
+  var previous = {}
+  for (var i = 0; i < before.length; i++) previous[before[i].id] = before[i]
+
+  var changes = []
+
+  for (var j = 0; j < after.length; j++) {
+    var now = after[j]
+    var was = previous[now.id]
+    if (!was) continue // new containers are not news
+
+    if (was.cell === now.cell && was.state === now.state) continue
+
+    var change = classifyChange(was, now)
+    if (change) changes.push({ container: now, kind: change })
+  }
+
+  return changes
+}
+
+function classifyChange(was, now) {
+  var wasBad = was.cell === "bad" || was.cell === "warn"
+  var isBad = now.cell === "bad" || now.cell === "warn"
+
+  if (!wasBad && isBad) {
+    if (now.state === "restarting") return "restarting"
+    if (now.health === "unhealthy") return "unhealthy"
+    if (now.state === "exited") return "failed"
+    return "degraded"
+  }
+
+  // Recovery is worth saying exactly once, and only for something that had
+  // actually gone wrong — not for every container someone starts by hand.
+  if (wasBad && !isBad && now.state === "running") return "recovered"
+
+  return null
+}
+
+function changeNotification(change) {
+  var name = change.container.name
+  var kind = change.kind
+
+  if (kind === "restarting") return { urgency: "critical", title: name, body: "está em loop de restart" }
+  if (kind === "unhealthy") return { urgency: "critical", title: name, body: "ficou unhealthy" }
+  if (kind === "failed") return { urgency: "critical", title: name, body: "saiu com erro" }
+  if (kind === "degraded") return { urgency: "normal", title: name, body: "mudou de estado" }
+  if (kind === "recovered") return { urgency: "low", title: name, body: "voltou ao normal" }
+  return null
+}
+
+function notifyCommand(notification) {
+  return ["notify-send", "-a", "Docker", "-u", notification.urgency,
+    notification.title, notification.body]
 }
 
 // Docker emits a burst of events for a single `compose up`; only the ones that
