@@ -1089,6 +1089,112 @@ function resourceConfirmMessage(resources) {
   return "Remove " + resources.length + " items" + size + "?"
 }
 
+// ------------------------------------------------------------ selection
+//
+// Selection is a plain map of id -> true, rebuilt on every change rather than
+// mutated: QML only re-evaluates a binding when the object identity changes,
+// and a mutated map updates nothing on screen.
+
+function toggleSelection(selection, id) {
+  var next = Object.assign({}, selection)
+  if (next[id]) delete next[id]
+  else next[id] = true
+  return next
+}
+
+function setSelection(selection, ids, on) {
+  var next = Object.assign({}, selection)
+  for (var i = 0; i < ids.length; i++) {
+    if (on) next[ids[i]] = true
+    else delete next[ids[i]]
+  }
+  return next
+}
+
+function selectionCount(selection) {
+  return Object.keys(selection || {}).length
+}
+
+function selectedFrom(items, selection) {
+  var out = []
+  for (var i = 0; i < items.length; i++) {
+    if (selection[items[i].id]) out.push(items[i])
+  }
+  return out
+}
+
+// A group is checked when every one of its rows is, which is also the state the
+// header checkbox has to show — half-checked is a lie people click twice.
+function groupChecked(items, selection) {
+  if (items.length === 0) return false
+  for (var i = 0; i < items.length; i++) {
+    if (!selection[items[i].id]) return false
+  }
+  return true
+}
+
+// Anything that was selected and then filtered away is dropped: acting on rows
+// that are no longer on screen is how a bulk action becomes a surprise.
+function pruneSelection(selection, items) {
+  var alive = {}
+  for (var i = 0; i < items.length; i++) alive[items[i].id] = true
+
+  var next = {}
+  var keys = Object.keys(selection || {})
+  for (var k = 0; k < keys.length; k++) {
+    if (alive[keys[k]]) next[keys[k]] = true
+  }
+  return next
+}
+
+// ------------------------------------------------------ grouped resources
+
+// The same shape the container list uses, so one list widget serves all four
+// tabs: images by repository, volumes and networks by compose project.
+function groupResources(items) {
+  var order = []
+  var byGroup = {}
+
+  var sorted = items.slice().sort(function(left, right) {
+    return compare(left.group, right.group) || compare(left.name, right.name)
+  })
+
+  for (var i = 0; i < sorted.length; i++) {
+    var key = sorted[i].group || "(loose)"
+    if (!byGroup[key]) {
+      byGroup[key] = { project: key, loose: key === "(loose)", items: [], size: 0 }
+      order.push(key)
+    }
+    byGroup[key].items.push(sorted[i])
+    byGroup[key].size += sorted[i].size || 0
+  }
+
+  var groups = []
+  for (var j = 0; j < order.length; j++) groups.push(byGroup[order[j]])
+
+  // Loose last, matching where the container list puts it.
+  return groups.sort(function(left, right) {
+    if (left.loose !== right.loose) return left.loose ? 1 : -1
+    return compare(left.project, right.project)
+  })
+}
+
+function matchesResourceQuery(item, query) {
+  var needle = String(query || "").trim().toLowerCase()
+  if (!needle) return true
+  return (item.name + " " + item.group + " " + (item.detail || "")).toLowerCase().indexOf(needle) >= 0
+}
+
+function searchResources(items, query) {
+  var out = []
+  for (var i = 0; i < items.length; i++) {
+    if (matchesResourceQuery(items[i], query)) out.push(items[i])
+  }
+  return out
+}
+
+var TABS = ["containers", "images", "volumes", "networks"]
+
 // --------------------------------------------------------------- gauges
 
 // Three numbers against their real ceilings, because a percentage with no

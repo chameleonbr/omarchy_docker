@@ -1327,4 +1327,83 @@ check("stopping the daemon takes the socket with it", () => {
   assert.ok(!daemonCommand("start").includes("docker.socket"))
 })
 
+
+// ------------------------------------------------------------ selection
+
+check("selection is rebuilt, never mutated", () => {
+  // QML re-evaluates a binding when the object identity changes; a mutated map
+  // updates nothing on screen.
+  const before = {}
+  const after = toggleSelection(before, "a")
+
+  assert.notStrictEqual(before, after)
+  assert.deepStrictEqual(before, {}, "the original is untouched")
+  assert.deepStrictEqual(after, { a: true })
+  assert.deepStrictEqual(toggleSelection(after, "a"), {}, "and it toggles back")
+})
+
+check("a group is checked only when every row is", () => {
+  // Half-checked is a lie people click twice.
+  const items = [{ id: "a" }, { id: "b" }]
+  assert.strictEqual(groupChecked(items, { a: true }), false)
+  assert.strictEqual(groupChecked(items, { a: true, b: true }), true)
+  assert.strictEqual(groupChecked([], { a: true }), false, "an empty group is not checked")
+})
+
+check("selecting a whole group is one call, and so is clearing it", () => {
+  const ids = ["a", "b", "c"]
+  const all = setSelection({}, ids, true)
+  assert.strictEqual(selectionCount(all), 3)
+  assert.deepStrictEqual(setSelection(all, ids, false), {})
+})
+
+check("rows filtered away drop out of the selection", () => {
+  // Acting on rows that are no longer on screen is how a bulk action becomes a
+  // surprise.
+  const selection = { a: true, gone: true }
+  const onScreen = [{ id: "a" }, { id: "b" }]
+
+  assert.deepStrictEqual(pruneSelection(selection, onScreen), { a: true })
+  assert.deepStrictEqual(pruneSelection({}, onScreen), {})
+})
+
+check("the selection resolves back to the objects it names", () => {
+  const items = [{ id: "a", name: "one" }, { id: "b", name: "two" }]
+  assert.deepStrictEqual(selectedFrom(items, { b: true }), [{ id: "b", name: "two" }])
+  assert.deepStrictEqual(selectedFrom(items, {}), [])
+})
+
+// ---------------------------------------------------- grouped resources
+
+check("resources group the same way containers do", () => {
+  const images = parseImages(IMAGES_FIXTURE)
+  const groups = groupResources(images)
+
+  assert.ok(groups.length >= 1)
+  for (const group of groups) {
+    assert.ok(group.items.length > 0)
+    assert.strictEqual(group.size, group.items.reduce((sum, i) => sum + i.size, 0))
+  }
+})
+
+check("loose resources sort last, matching the container list", () => {
+  const groups = groupResources([
+    { id: "1", name: "z", group: "(loose)", size: 0 },
+    { id: "2", name: "a", group: "web-shop", size: 0 }
+  ])
+  assert.strictEqual(groups[0].project, "web-shop")
+  assert.ok(groups[groups.length - 1].loose)
+})
+
+check("resource search covers the name, the group and the detail", () => {
+  const items = [
+    { id: "1", name: "web-shop-api:latest", group: "web-shop-api", detail: "2 days ago" },
+    { id: "2", name: "redis:7-alpine", group: "redis", detail: "3 weeks ago" }
+  ]
+  assert.strictEqual(searchResources(items, "redis").length, 1)
+  assert.strictEqual(searchResources(items, "WEEKS").length, 1)
+  assert.strictEqual(searchResources(items, "").length, 2)
+  assert.strictEqual(searchResources(items, "nope").length, 0)
+})
+
 console.log(passed + " checks passed")

@@ -208,6 +208,20 @@ Panel {
     function toggle(): void { root.toggle() }
     function refresh(): void { if (root.service) root.service.refresh() }
 
+    // Open straight onto one tab, which is what a keybinding wants: "show me
+    // the images" is a different intent from "show me the panel".
+    function openTab(name: string): void {
+      var widget = root.widgetOnMonitor(root.monitorName) || root
+      widget.tab = Docker.TABS.indexOf(name) >= 0 ? name : "containers"
+      widget.open()
+    }
+
+    function openTabOn(monitor: string, name: string): void {
+      var widget = root.widgetOnMonitor(monitor) || root
+      widget.tab = Docker.TABS.indexOf(name) >= 0 ? name : "containers"
+      widget.open()
+    }
+
     // The bar runs one widget per monitor but only one IPC handler, so a plain
     // `open` always lands on whichever copy registered first. This finds the
     // copy that lives on the named monitor and opens that one instead — what a
@@ -394,9 +408,39 @@ Panel {
   // Filter state. The query resets when the popup closes — a filter that
   // survives will eventually convince someone their containers are gone. The
   // view chip persists, because that one is a preference.
+  property string tab: "containers"
+  property var selection: ({})
   property string query: ""
   property string view: String(setting("view", "all"))
   property var collapsedStacks: ({})
+
+  onTabChanged: {
+    // Carrying a selection across tabs would let a click act on rows from a
+    // list nobody is looking at.
+    selection = ({})
+    query = ""
+    if (service) service.activeTab = tab
+  }
+
+  readonly property var tabItems: {
+    if (tab === "containers") return []
+    return service ? Docker.searchResources(service.resourcesFor(tab), query) : []
+  }
+
+  readonly property var tabGroups: Docker.groupResources(tabItems)
+
+  readonly property var selectedItems: Docker.selectedFrom(tabItems, selection)
+  readonly property int selectedCount: Docker.selectionCount(selection)
+
+  function toggleRow(id) {
+    selection = Docker.toggleSelection(selection, id)
+  }
+
+  function toggleGroup(group) {
+    var ids = []
+    for (var i = 0; i < group.items.length; i++) ids.push(group.items[i].id)
+    selection = Docker.setSelection(selection, ids, !Docker.groupChecked(group.items, selection))
+  }
 
   readonly property var visibleContainers:
     Docker.searchContainers(containers, { view: root.view, query: root.query })
@@ -568,6 +612,39 @@ Panel {
         }
       }
 
+      // --------------------------------------------------------- tabs
+
+      Row {
+        width: parent.width
+        spacing: Style.space(2)
+        visible: root.daemonOk
+
+        Repeater {
+          model: [
+            { key: "containers", label: "containers" },
+            { key: "images", label: "imagens" },
+            { key: "volumes", label: "volumes" },
+            { key: "networks", label: "redes" }
+          ]
+
+          Chip {
+            required property var modelData
+
+            readonly property int count: modelData.key === "containers"
+              ? root.summary.total
+              : (root.service ? root.service.resourcesFor(modelData.key).length : 0)
+
+            label: modelData.label
+            badge: count > 0 ? String(count) : ""
+            selected: root.tab === modelData.key
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
+            onClicked: root.tab = modelData.key
+          }
+        }
+      }
+
       // ------------------------------------------------------ toolbar
 
       Row {
@@ -578,7 +655,7 @@ Panel {
         TextField {
           id: search
           anchors.verticalCenter: parent.verticalCenter
-          width: parent.width - chips.implicitWidth - Style.space(6)
+          width: parent.width - (chips.visible ? chips.implicitWidth + Style.space(6) : 0)
           placeholderText: "serviço, stack, container ou imagem"
           foreground: root.foreground
           onTextChanged: root.query = text
@@ -588,6 +665,8 @@ Panel {
           id: chips
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.space(2)
+          // Running and stopped mean nothing for an image or a network.
+          visible: root.tab === "containers"
 
           Repeater {
             model: [
@@ -628,6 +707,89 @@ Panel {
         }
       }
 
+      // ------------------------------------------------- command bar
+
+      Rectangle {
+        width: parent.width
+        height: commandRow.implicitHeight + Style.space(10)
+        radius: Style.cornerRadius > 0 ? Style.space(4) : 0
+        // Only present when something is selected: a permanent bar of disabled
+        // buttons is furniture.
+        visible: root.daemonOk && root.selectedCount > 0
+        color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.12)
+
+        Row {
+          id: commandRow
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.leftMargin: Style.space(8)
+          anchors.rightMargin: Style.space(8)
+          spacing: Style.space(8)
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.selectedCount + (root.selectedCount === 1
+              ? " selecionado" : " selecionados")
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+
+          Chip {
+            anchors.verticalCenter: parent.verticalCenter
+            label: "limpar"
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
+            onClicked: root.selection = ({})
+          }
+
+          Item {
+            width: parent.width - Style.space(280)
+            height: 1
+          }
+
+          Chip {
+            anchors.verticalCenter: parent.verticalCenter
+            // One confirmation naming the count and the size, not one per item:
+            // a dialog that appears eleven times is a dialog nobody reads.
+            label: "remover"
+            foreground: bar ? bar.urgent : Color.urgent
+            dim: bar ? bar.urgent : Color.urgent
+            fontFamily: root.fontFamily
+            onClicked: {
+              var items = root.selectedItems
+              var removable = []
+              for (var i = 0; i < items.length; i++) {
+                if (Docker.canRemoveResource(items[i])) removable.push(items[i])
+              }
+              if (removable.length === 0) return
+              root.askConfirm(
+                Docker.resourceConfirmMessage(removable),
+                "Remover",
+                function() {
+                  if (root.service) root.service.removeResources(removable)
+                  root.selection = ({})
+                })
+            }
+          }
+        }
+      }
+
+      Text {
+        width: parent.width
+        wrapMode: Text.WordWrap
+        // The engine saying no is the answer, not an obstacle to route around.
+        visible: root.service && root.service.lastResourceError !== ""
+        text: root.service ? root.service.lastResourceError : ""
+        textFormat: Text.PlainText
+        color: bar ? bar.urgent : Color.urgent
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
       // --------------------------------------------------------- list
 
       Flickable {
@@ -647,7 +809,7 @@ Panel {
 
           Text {
             width: parent.width
-            visible: root.visibleContainers.length === 0
+            visible: root.tab === "containers" && root.visibleContainers.length === 0
             text: root.filtering
               ? "Nenhum container com esse filtro."
               : "Nenhum container."
@@ -656,8 +818,185 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
+          Text {
+            width: parent.width
+            visible: root.tab !== "containers" && root.tabItems.length === 0
+            text: root.query !== "" ? "Nada com esse filtro." : "Nada aqui."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          // ------------------------------------ images, volumes, networks
+
           Repeater {
-            model: root.visibleGroups
+            model: root.tab === "containers" ? [] : root.tabGroups
+
+            Column {
+              id: resourceBlock
+              required property var modelData
+
+              width: list.width
+              spacing: Style.space(2)
+
+              Rectangle {
+                width: parent.width
+                height: resourceHeader.implicitHeight + Style.space(10)
+                radius: Style.cornerRadius > 0 ? Style.space(4) : 0
+                color: resourceGroupHover.containsMouse
+                  ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                  : "transparent"
+
+                MouseArea {
+                  id: resourceGroupHover
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.toggleGroup(resourceBlock.modelData)
+                }
+
+                Row {
+                  id: resourceHeader
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: Style.space(6)
+                  anchors.rightMargin: Style.space(6)
+                  spacing: Style.space(6)
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Docker.groupChecked(resourceBlock.modelData.items, root.selection)
+                      ? "󰄲" : "󰄱"
+                    color: Docker.groupChecked(resourceBlock.modelData.items, root.selection)
+                      ? Color.accent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: resourceBlock.modelData.project
+                    textFormat: Text.PlainText
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+                    elide: Text.ElideRight
+                    width: parent.width - Style.space(120)
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: resourceBlock.modelData.size > 0
+                      ? Docker.formatBytes(resourceBlock.modelData.size)
+                      : String(resourceBlock.modelData.items.length)
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+              }
+
+              Repeater {
+                model: resourceBlock.modelData.items
+
+                Rectangle {
+                  id: resourceRow
+                  required property var modelData
+
+                  readonly property bool checked: root.selection[modelData.id] === true
+                  readonly property bool removable: Docker.canRemoveResource(modelData)
+
+                  width: list.width
+                  height: resourceRowContent.implicitHeight + Style.space(9)
+                  radius: Style.cornerRadius > 0 ? Style.space(4) : 0
+                  color: resourceRow.checked
+                    ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.14)
+                    : (resourceHover.containsMouse
+                      ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                      : "transparent")
+
+                  Behavior on color { ColorAnimation { duration: 120 } }
+
+                  MouseArea {
+                    id: resourceHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: resourceRow.removable ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: if (resourceRow.removable) root.toggleRow(resourceRow.modelData.id)
+                  }
+
+                  Row {
+                    id: resourceRowContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(20)
+                    anchors.rightMargin: Style.space(6)
+                    spacing: Style.space(6)
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      // The engine's own networks are listed, because they are
+                      // part of the picture, and never selectable, because
+                      // removing them breaks the engine.
+                      text: !resourceRow.removable ? "󰌾"
+                        : (resourceRow.checked ? "󰄲" : "󰄱")
+                      color: resourceRow.checked ? Color.accent : root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: resourceRow.modelData.name
+                      textFormat: Text.PlainText
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      elide: Text.ElideMiddle
+                      width: Style.space(230)
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: {
+                        var parts = []
+                        if (resourceRow.modelData.detail) parts.push(resourceRow.modelData.detail)
+                        if (resourceRow.modelData.inUse) parts.push("em uso")
+                        if (resourceRow.modelData.anonymous) parts.push("anônimo")
+                        return parts.join(" · ")
+                      }
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                      width: Math.max(Style.space(40),
+                        resourceRowContent.width - Style.space(230) - Style.space(120))
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: resourceRow.modelData.size > 0
+                        ? Docker.formatBytes(resourceRow.modelData.size) : ""
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      horizontalAlignment: Text.AlignRight
+                      width: Style.space(70)
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // ------------------------------------------------- containers
+
+          Repeater {
+            model: root.tab === "containers" ? root.visibleGroups : []
 
             Column {
               id: stackBlock

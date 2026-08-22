@@ -330,6 +330,95 @@ Item {
     pump()
   }
 
+  // ---------------------------------------------------------- resources
+  //
+  // Images, volumes and networks are read only for the tab being looked at:
+  // three extra engine calls on every refresh, to populate lists nobody has
+  // opened, is exactly the cost this plugin spends the rest of its effort
+  // avoiding.
+
+  property string activeTab: "containers"
+  property var images: []
+  property var volumes: []
+  property var networks: []
+  property string lastResourceError: ""
+
+  onActiveTabChanged: refreshTab()
+
+  function refreshTab() {
+    if (activeTab === "images") load("images")
+    else if (activeTab === "volumes") load("volumes")
+    else if (activeTab === "networks") load("networks")
+  }
+
+  function load(kind) {
+    if (resourceProcess.running) return
+    resourceProcess.kind = kind
+    resourceProcess.command = kind === "images" ? Docker.imagesCommand()
+      : (kind === "volumes" ? Docker.volumesCommand() : Docker.networksCommand())
+    resourceProcess.running = true
+  }
+
+  Process {
+    id: resourceProcess
+
+    property string kind: ""
+    property string pendingText: ""
+    property bool textReady: false
+    property bool exitReady: false
+    property int lastExit: 0
+
+    function applyWhenComplete() {
+      if (!textReady || !exitReady) return
+      textReady = false
+      exitReady = false
+      if (lastExit !== 0) return
+
+      if (kind === "images") root.images = Docker.parseImages(pendingText)
+      else if (kind === "volumes") root.volumes = Docker.parseVolumes(pendingText)
+      else if (kind === "networks") root.networks = Docker.parseNetworks(pendingText)
+    }
+
+    stdout: StdioCollector {
+      id: resourceStdout
+      waitForEnd: true
+      onStreamFinished: {
+        resourceProcess.pendingText = resourceStdout.text
+        resourceProcess.textReady = true
+        resourceProcess.applyWhenComplete()
+      }
+    }
+
+    onExited: function(exitCode) {
+      resourceProcess.lastExit = exitCode
+      resourceProcess.exitReady = true
+      resourceProcess.applyWhenComplete()
+    }
+  }
+
+  function resourcesFor(tab) {
+    if (tab === "images") return images
+    if (tab === "volumes") return volumes
+    if (tab === "networks") return networks
+    return []
+  }
+
+  // The engine refuses to delete anything still in use, and that refusal is
+  // information — it is surfaced rather than worked around with a force flag.
+  function removeResources(resources) {
+    lastResourceError = ""
+    for (var i = 0; i < resources.length; i++) {
+      if (!Docker.canRemoveResource(resources[i])) continue
+      actionQueue.push({
+        key: resources[i].id,
+        command: Docker.resourceRemoveCommand(resources[i]),
+        resample: true,
+        reloadTab: true
+      })
+    }
+    pump()
+  }
+
   // ------------------------------------------------------- notifications
 
   property bool notificationsEnabled: true
@@ -402,18 +491,31 @@ Item {
   property string actionKey: ""
 
   property bool actionResamples: false
+  property bool actionReloadsTab: false
 
   function pump() {
     if (actionProcess.running || actionQueue.length === 0) return
     var next = actionQueue.shift()
     actionKey = next.key
     actionResamples = next.resample === true
+    actionReloadsTab = next.reloadTab === true
     actionProcess.command = next.command
     actionProcess.running = true
   }
 
   Process {
     id: actionProcess
+
+    stderr: StdioCollector {
+      id: actionStderr
+      waitForEnd: true
+      onStreamFinished: {
+        var text = actionStderr.text.trim()
+        // "volume is in use", "image is being used by container" — the engine
+        // saying no is the answer, not an obstacle to route around.
+        if (text) root.lastResourceError = text.split("\n")[0]
+      }
+    }
 
     onExited: {
       root.markBusy(root.actionKey, "")
@@ -424,7 +526,9 @@ Item {
       // A prune or a remove changes what is on disk, and the panel is showing
       // the old number until this lands.
       if (root.actionResamples) root.sampleDf()
+      if (root.actionReloadsTab) root.refreshTab()
       root.actionResamples = false
+      root.actionReloadsTab = false
       root.pump()
     }
   }
