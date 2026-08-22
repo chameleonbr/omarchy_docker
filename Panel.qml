@@ -542,7 +542,7 @@ Panel {
     open: root.opened
     focusTarget: search
     contentWidth: card.fittedContentWidth(Style.space(660))
-    contentHeight: card.fittedContentHeight(shell.implicitHeight, Style.space(820))
+    contentHeight: card.fittedContentHeight(shell.implicitHeight, shell.maxPanelHeight)
 
     // Inside the panel, filling it. As a child of the bar widget — which is
     // where this lived — the dialog's scrim anchored to an item roughly a
@@ -571,9 +571,32 @@ Panel {
       width: parent.width
       spacing: Style.space(10)
 
+      function heightOf(item) {
+        return item && item.visible ? item.height + spacing : 0
+      }
+
+      // Everything that is not the list. Summed from the blocks themselves
+      // rather than derived from the column's own height, which would be
+      // circular.
+      readonly property real chrome: heightOf(headerRow) + heightOf(gaugesRow)
+        + heightOf(tabsRow) + heightOf(toolbarRow) + heightOf(daemonBlock)
+        + heightOf(commandBar) + heightOf(resourceError) + heightOf(footerBlock)
+
+      // The same ceiling the panel itself asks for. Using the screen height
+      // here while contentHeight capped at something smaller was the whole bug:
+      // the list sized to a panel taller than the one that got drawn, and the
+      // footer fell off the bottom of it.
+      readonly property real maxPanelHeight: Math.min(
+        card.availableCardHeight > 0 ? card.availableCardHeight : Style.space(820),
+        Style.space(820))
+
+      readonly property real roomForList: Math.max(Style.space(90),
+        maxPanelHeight - card.verticalContentInset - chrome)
+
       // ------------------------------------------------------- header
 
       Row {
+        id: headerRow
         width: parent.width
         spacing: Style.space(8)
 
@@ -671,6 +694,7 @@ Panel {
       // ------------------------------------------------------- gauges
 
       Row {
+        id: gaugesRow
         width: parent.width
         spacing: Style.space(20)
         visible: root.daemonOk
@@ -712,6 +736,7 @@ Panel {
       // --------------------------------------------------------- tabs
 
       Row {
+        id: tabsRow
         width: parent.width
         spacing: Style.space(2)
         visible: root.daemonOk
@@ -745,6 +770,7 @@ Panel {
       // ------------------------------------------------------ toolbar
 
       Row {
+        id: toolbarRow
         width: parent.width
         spacing: Style.space(6)
         visible: root.daemonOk
@@ -788,6 +814,7 @@ Panel {
       // --------------------------------------------------- daemon down
 
       Column {
+        id: daemonBlock
         width: parent.width
         spacing: Style.space(6)
         visible: !root.daemonOk
@@ -807,6 +834,7 @@ Panel {
       // ------------------------------------------------- command bar
 
       Rectangle {
+        id: commandBar
         width: parent.width
         height: commandRow.implicitHeight + Style.space(10)
         radius: Style.cornerRadius > 0 ? Style.space(4) : 0
@@ -911,6 +939,7 @@ Panel {
       }
 
       Text {
+        id: resourceError
         width: parent.width
         wrapMode: Text.WordWrap
         // The engine saying no is the answer, not an obstacle to route around.
@@ -927,7 +956,14 @@ Panel {
       Flickable {
         id: flick
         width: parent.width
-        height: Math.min(list.implicitHeight, Style.space(520))
+        // What is left, not a fixed cap.
+        //
+        // With a fixed cap the column could grow past what the screen allows,
+        // the panel capped itself, and the last row — the footer — ended up
+        // outside it. Measuring the fixed blocks and giving the list the
+        // remainder makes the list absorb the shortfall instead, so the footer
+        // is always the thing that fits.
+        height: Math.max(Style.space(90), Math.min(list.implicitHeight, shell.roomForList))
         visible: root.daemonOk
         contentWidth: width
         contentHeight: list.implicitHeight
@@ -1662,6 +1698,7 @@ Panel {
       // ------------------------------------------------------- footer
 
       Column {
+        id: footerBlock
         width: parent.width
         spacing: Style.space(3)
         visible: root.daemonOk && root.service && root.service.dfRows.length > 0

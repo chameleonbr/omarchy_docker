@@ -237,6 +237,18 @@ anchored to that, so every confirmation rendered inside the bar where nobody
 could see or click it, and every destructive button silently did nothing. It
 belongs inside the panel, `anchors.fill: parent`.
 
+## Panel height
+
+The list takes what is left; the chrome takes what it needs. `shell.chrome` sums
+the fixed blocks from the blocks themselves — deriving it from the column's own
+height would be circular — and the list gets the remainder.
+
+**Both the list and `contentHeight` must use the same ceiling.** Sizing the list
+against the screen while `contentHeight` capped at something smaller was exactly
+the bug: the list sized itself to a panel taller than the one that got drawn,
+and the footer fell off the bottom of it. `shell.maxPanelHeight` is that single
+ceiling; do not reintroduce a second one.
+
 ## Shared modules
 
 **`.pragma library` is not optional on `Docker.js` and `I18n.js`.** Without it,
