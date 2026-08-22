@@ -310,9 +310,21 @@ check("a stack changing state does not move its cell", () => {
   assert.deepStrictEqual(after, before)
 })
 
+check("the loose group key is stable, not translated", () => {
+  // It reaches the panel as a project name and is what hideProjects matches on:
+  // translating it in the data would make a filter stop working when someone
+  // switches language.
+  setLanguage("pt")
+  const groups = groupByProject(parsePs(psFixture))
+  const loose = groups.find(group => group.loose)
+  assert.strictEqual(loose.project, "(loose)", "same key in every language")
+  assert.notStrictEqual(t("group.loose"), "(loose)", "and the panel does translate it")
+  setLanguage("en")
+})
+
 check("loose containers sit last in the mosaic too, matching the popup", () => {
   const cells = resolveCells(parsePs(psFixture), { groupBy: "stack" }).cells
-  assert.strictEqual(cells[cells.length - 1].key, "(avulsos)")
+  assert.strictEqual(cells[cells.length - 1].key, "(loose)")
 })
 
 check("a container changing state does not move its cell", () => {

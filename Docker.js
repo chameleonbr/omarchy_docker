@@ -261,7 +261,11 @@ function compare(left, right) {
 
 // ------------------------------------------------------------- grouping
 
-var LOOSE = "(avulsos)"
+// A key, not a label. It reaches the panel as the group's project name and is
+// what `hideProjects` matches on, so it has to be stable across languages —
+// translating it here would make a filter stop working when someone switches
+// language.
+var LOOSE = "(loose)"
 
 function groupByProject(containers) {
   var order = []

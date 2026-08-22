@@ -1,4 +1,4 @@
-# Plan
+# Ultra Docker — plan
 
 What is still to build, and the decisions that go with each item. `SPEC.md`
 covers what already exists and why it is shaped that way; this is the part that

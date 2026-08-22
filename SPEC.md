@@ -1,4 +1,4 @@
-# avila.ultra-docker — design notes
+# Ultra Docker — design notes
 
 Why the plugin is shaped the way it is. `README.md` is for using it; this is for
 deciding whether a change is a good idea.

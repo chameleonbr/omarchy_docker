@@ -1,20 +1,14 @@
 # CLAUDE.md
 
-Working notes for `avila.ultra-docker`, an Omarchy shell plugin. Read this before
-changing anything here.
+Working notes for **Ultra Docker** (`avila.ultra-docker`), an Omarchy shell
+plugin. Read this before changing anything here.
 
 ## Development loop
-
-**After changing the plugin id, restart the shell before believing anything.**
-The running shell keeps the plugin it loaded at startup under its old id: the
-symlink and the bar entry move, and the widget on screen is still the previous
-one. Buttons appear dead for reasons that are not in the code.
-
 
 The plugin is installed as a symlink:
 
 ```
-~/.config/omarchy/plugins/avila.ultra-docker -> ~/orca/omarchy_docker
+~/.config/omarchy/plugins/avila.ultra-docker -> ~/orca/omarchy_ultra_docker
 ```
 
 **The shell's file watcher does not follow that symlink.** Saving a file here
@@ -27,6 +21,11 @@ time once already.
 node test_docker.js       # first, always: the logic is testable without a shell
 omarchy restart shell     # the only reliable way to load edited QML from here
 ```
+
+**After changing the plugin id, restart before believing anything.** The running
+shell keeps the plugin it loaded at startup under the old id: the symlink and
+the bar entry move, and the widget on screen is still the previous instance. Its
+buttons appear dead for reasons that are not in the code.
 
 To see what the running widget actually thinks, log from QML and read it back:
 

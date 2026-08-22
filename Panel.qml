@@ -613,7 +613,12 @@ Panel {
 
         Text {
           anchors.verticalCenter: parent.verticalCenter
-          text: root.service ? root.service.engineLabel : "Docker"
+          // The plugin's name, with the engine appended only when it is not
+          // the expected one: "Podman" is worth knowing at a glance, "Docker"
+          // is what everyone already assumes.
+          text: root.service && root.service.engineName !== "docker"
+            ? "Ultra Docker · " + root.service.engineLabel
+            : "Ultra Docker"
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -927,7 +932,8 @@ Panel {
 
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: resourceBlock.modelData.project
+                    text: resourceBlock.modelData.loose
+                      ? root.tr("group.loose") : resourceBlock.modelData.project
                     textFormat: Text.PlainText
                     color: root.foreground
                     font.family: root.fontFamily
@@ -1156,7 +1162,11 @@ Panel {
 
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: stackBlock.modelData.project
+                    // The loose group carries a stable key, translated only
+                    // here: translating it in the data would break the filter
+                    // that matches on it.
+                    text: stackBlock.modelData.loose
+                      ? root.tr("group.loose") : stackBlock.modelData.project
                     textFormat: Text.PlainText
                     color: root.foreground
                     font.family: root.fontFamily
