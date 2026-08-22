@@ -831,126 +831,6 @@ Panel {
         }
       }
 
-      // ------------------------------------------------- command bar
-
-      Rectangle {
-        id: commandBar
-        width: parent.width
-        height: commandRow.implicitHeight + Style.space(10)
-        radius: Style.cornerRadius > 0 ? Style.space(4) : 0
-        // Only present when something is selected: a permanent bar of disabled
-        // buttons is furniture.
-        visible: root.daemonOk && root.selectedCount > 0
-        color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.12)
-
-        Row {
-          id: commandRow
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          anchors.leftMargin: Style.space(8)
-          anchors.rightMargin: Style.space(8)
-          spacing: Style.space(8)
-
-          Text {
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.trPlural("selected.one", "selected.many", root.selectedCount)
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-          }
-
-          Chip {
-            anchors.verticalCenter: parent.verticalCenter
-            label: root.tr("action.clear")
-            foreground: root.foreground
-            dim: root.dim
-            fontFamily: root.fontFamily
-            onClicked: root.selection = ({})
-          }
-
-          Item {
-            width: Math.max(0, parent.width - Style.space(300)
-              - (root.tab === "containers" ? Style.space(240) : 0))
-            height: 1
-          }
-
-          Repeater {
-            // Containers do the four things a container does; the resource tabs
-            // only remove, because that is the only thing an image or a network
-            // can be told.
-            model: root.tab === "containers"
-              ? [
-                { key: "start", label: root.tr("action.start") },
-                { key: "stop", label: root.tr("action.stop") },
-                { key: "restart", label: root.tr("action.restart") },
-                { key: "logs", label: root.tr("action.logs") }
-              ]
-              : []
-
-            Chip {
-              required property var modelData
-              anchors.verticalCenter: parent.verticalCenter
-              label: modelData.label
-              foreground: root.foreground
-              dim: root.dim
-              fontFamily: root.fontFamily
-              onClicked: {
-                if (!root.service) return
-                var items = root.selectedItems
-                for (var i = 0; i < items.length; i++) {
-                  if (modelData.key === "logs")
-                    root.service.openContainerView("logs", items[i], root.monitorName)
-                  else
-                    root.service.runContainer(modelData.key, items[i])
-                }
-                root.selection = ({})
-              }
-            }
-          }
-
-          Chip {
-            anchors.verticalCenter: parent.verticalCenter
-            // One confirmation naming the count and the size, not one per item:
-            // a dialog that appears eleven times is a dialog nobody reads.
-            label: root.tr("action.remove")
-            visible: root.tab !== "containers"
-            foreground: root.badColor
-            dim: root.badColor
-            fontFamily: root.fontFamily
-            onClicked: {
-              var items = root.selectedItems
-              var removable = []
-              for (var i = 0; i < items.length; i++) {
-                if (Docker.canRemoveResource(items[i])) removable.push(items[i])
-              }
-              if (removable.length === 0) return
-              root.askConfirm(
-                root.trRemoveResources(removable),
-                root.tr("action.remove"),
-                function() {
-                  if (root.service) root.service.removeResources(removable)
-                  root.selection = ({})
-                })
-            }
-          }
-        }
-      }
-
-      Text {
-        id: resourceError
-        width: parent.width
-        wrapMode: Text.WordWrap
-        // The engine saying no is the answer, not an obstacle to route around.
-        visible: root.service && root.service.lastResourceError !== ""
-        text: root.service ? root.service.lastResourceError : ""
-        textFormat: Text.PlainText
-        color: root.badColor
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-      }
-
       // --------------------------------------------------------- list
 
       Flickable {
@@ -1693,6 +1573,132 @@ Panel {
             }
           }
         }
+      }
+
+      // ------------------------------------------------- command bar
+      //
+      // Below the list, not above it. Above, the bar appearing on the first
+      // click pushed every row down by its own height — the row you had just
+      // ticked slid out from under the cursor, which is exactly when you are
+      // still looking at it. Below, the list absorbs the space instead: its top
+      // never moves, so nothing you can see changes position.
+
+      Rectangle {
+        id: commandBar
+        width: parent.width
+        height: commandRow.implicitHeight + Style.space(10)
+        radius: Style.cornerRadius > 0 ? Style.space(4) : 0
+        // Only present when something is selected: a permanent bar of disabled
+        // buttons is furniture.
+        visible: root.daemonOk && root.selectedCount > 0
+        color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.12)
+
+        Row {
+          id: commandRow
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.leftMargin: Style.space(8)
+          anchors.rightMargin: Style.space(8)
+          spacing: Style.space(8)
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.trPlural("selected.one", "selected.many", root.selectedCount)
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+
+          Chip {
+            anchors.verticalCenter: parent.verticalCenter
+            label: root.tr("action.clear")
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
+            onClicked: root.selection = ({})
+          }
+
+          Item {
+            width: Math.max(0, parent.width - Style.space(300)
+              - (root.tab === "containers" ? Style.space(240) : 0))
+            height: 1
+          }
+
+          Repeater {
+            // Containers do the four things a container does; the resource tabs
+            // only remove, because that is the only thing an image or a network
+            // can be told.
+            model: root.tab === "containers"
+              ? [
+                { key: "start", label: root.tr("action.start") },
+                { key: "stop", label: root.tr("action.stop") },
+                { key: "restart", label: root.tr("action.restart") },
+                { key: "logs", label: root.tr("action.logs") }
+              ]
+              : []
+
+            Chip {
+              required property var modelData
+              anchors.verticalCenter: parent.verticalCenter
+              label: modelData.label
+              foreground: root.foreground
+              dim: root.dim
+              fontFamily: root.fontFamily
+              onClicked: {
+                if (!root.service) return
+                var items = root.selectedItems
+                for (var i = 0; i < items.length; i++) {
+                  if (modelData.key === "logs")
+                    root.service.openContainerView("logs", items[i], root.monitorName)
+                  else
+                    root.service.runContainer(modelData.key, items[i])
+                }
+                root.selection = ({})
+              }
+            }
+          }
+
+          Chip {
+            anchors.verticalCenter: parent.verticalCenter
+            // One confirmation naming the count and the size, not one per item:
+            // a dialog that appears eleven times is a dialog nobody reads.
+            label: root.tr("action.remove")
+            visible: root.tab !== "containers"
+            foreground: root.badColor
+            dim: root.badColor
+            fontFamily: root.fontFamily
+            onClicked: {
+              var items = root.selectedItems
+              var removable = []
+              for (var i = 0; i < items.length; i++) {
+                if (Docker.canRemoveResource(items[i])) removable.push(items[i])
+              }
+              if (removable.length === 0) return
+              root.askConfirm(
+                root.trRemoveResources(removable),
+                root.tr("action.remove"),
+                function() {
+                  if (root.service) root.service.removeResources(removable)
+                  root.selection = ({})
+                })
+            }
+          }
+        }
+      }
+
+      Text {
+        id: resourceError
+        width: parent.width
+        wrapMode: Text.WordWrap
+        // The engine saying no is the answer, not an obstacle to route around.
+        visible: root.service && root.service.lastResourceError !== ""
+        text: root.service ? root.service.lastResourceError : ""
+        textFormat: Text.PlainText
+        color: root.badColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
       }
 
       // ------------------------------------------------------- footer

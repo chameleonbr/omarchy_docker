@@ -237,6 +237,15 @@ anchored to that, so every confirmation rendered inside the bar where nobody
 could see or click it, and every destructive button silently did nothing. It
 belongs inside the panel, `anchors.fill: parent`.
 
+## Nothing moves under the cursor
+
+The command bar sits **below** the list. Above it, appearing on the first click
+pushed every row down by its own height — the row just ticked slid out from
+under the pointer, at the exact moment you were still looking at it. Below, the
+list absorbs the space instead: its top never moves, so nothing visible changes
+position. Verified by diffing screenshots before and after a selection; every
+row y was identical.
+
 ## Panel height
 
 The list takes what is left; the chrome takes what it needs. `shell.chrome` sums
