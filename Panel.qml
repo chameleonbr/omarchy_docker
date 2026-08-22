@@ -1129,10 +1129,18 @@ Panel {
 
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: stackBlock.collapsed ? "▸" : "▾"
-                    color: root.dim
+                    // A chevron from the icon range at body size, not a
+                    // geometric triangle at caption size: the triangle renders
+                    // at a handful of pixels and reads as a speck rather than
+                    // as a control you can click.
+                    text: stackBlock.collapsed ? "󰅂" : "󰅀"
+                    color: stackHover.hovered ? root.foreground : root.dim
                     font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
+                    font.pixelSize: Style.font.body
+                    width: Style.space(14)
+                    horizontalAlignment: Text.AlignHCenter
+
+                    Behavior on color { ColorAnimation { duration: 120 } }
                   }
 
                   Rectangle {
