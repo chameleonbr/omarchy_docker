@@ -1386,6 +1386,22 @@ check("resources group the same way containers do", () => {
   }
 })
 
+check("a group of one is not a group", () => {
+  // Most repositories hold a single tag. Giving each its own header makes every
+  // image cost two rows saying nearly the same thing, with two checkboxes for
+  // one decision.
+  const groups = groupResources([
+    { id: "1", name: "adminer:latest", group: "adminer", size: 171e6 },
+    { id: "2", name: "redis:7", group: "redis", size: 1e6 },
+    { id: "3", name: "redis:6", group: "redis", size: 1e6 }
+  ])
+  const byName = {}
+  for (const group of groups) byName[group.project] = group
+
+  assert.strictEqual(byName["adminer"].single, true)
+  assert.strictEqual(byName["redis"].single, false)
+})
+
 check("loose resources sort last, matching the container list", () => {
   const groups = groupResources([
     { id: "1", name: "z", group: "(loose)", size: 0 },

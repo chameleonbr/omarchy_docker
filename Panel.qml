@@ -837,12 +837,14 @@ Panel {
               required property var modelData
 
               width: list.width
-              spacing: Style.space(2)
+              spacing: Style.space(1)
 
               Rectangle {
                 width: parent.width
-                height: resourceHeader.implicitHeight + Style.space(10)
+                height: resourceHeader.implicitHeight + Style.space(9)
                 radius: Style.cornerRadius > 0 ? Style.space(4) : 0
+                // A group of one renders as the row alone.
+                visible: !resourceBlock.modelData.single
                 color: resourceGroupHover.containsMouse
                   ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
                   : "transparent"
@@ -909,7 +911,7 @@ Panel {
                   readonly property bool removable: Docker.canRemoveResource(modelData)
 
                   width: list.width
-                  height: resourceRowContent.implicitHeight + Style.space(9)
+                  height: resourceRowContent.implicitHeight + Style.space(8)
                   radius: Style.cornerRadius > 0 ? Style.space(4) : 0
                   color: resourceRow.checked
                     ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.14)
@@ -932,7 +934,9 @@ Panel {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    anchors.leftMargin: Style.space(20)
+                    // Only indented when it sits under a header.
+                    anchors.leftMargin: resourceBlock.modelData.single
+                      ? Style.space(6) : Style.space(20)
                     anchors.rightMargin: Style.space(6)
                     spacing: Style.space(6)
 
@@ -950,11 +954,19 @@ Panel {
 
                     Text {
                       anchors.verticalCenter: parent.verticalCenter
-                      text: resourceRow.modelData.name
+                      // Under a header the repository is already on screen, so
+                      // the row shows only what distinguishes it.
+                      text: {
+                        var name = resourceRow.modelData.name
+                        if (resourceBlock.modelData.single) return name
+                        var prefix = resourceBlock.modelData.project + ":"
+                        return name.indexOf(prefix) === 0 ? name.slice(prefix.length) : name
+                      }
                       textFormat: Text.PlainText
                       color: root.foreground
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.bodySmall
+                      font.bold: resourceBlock.modelData.single
                       elide: Text.ElideMiddle
                       width: Style.space(230)
                     }
@@ -963,9 +975,9 @@ Panel {
                       anchors.verticalCenter: parent.verticalCenter
                       text: {
                         var parts = []
-                        if (resourceRow.modelData.detail) parts.push(resourceRow.modelData.detail)
                         if (resourceRow.modelData.inUse) parts.push("em uso")
                         if (resourceRow.modelData.anonymous) parts.push("anônimo")
+                        if (resourceRow.modelData.detail) parts.push(resourceRow.modelData.detail)
                         return parts.join(" · ")
                       }
                       textFormat: Text.PlainText

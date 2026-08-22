@@ -1170,7 +1170,15 @@ function groupResources(items) {
   }
 
   var groups = []
-  for (var j = 0; j < order.length; j++) groups.push(byGroup[order[j]])
+  for (var j = 0; j < order.length; j++) {
+    var group = byGroup[order[j]]
+    // A group of one is not a group. Most repositories hold a single tag, and
+    // giving each its own header row makes every image cost two lines that say
+    // nearly the same thing — same name, same size, twice, with two checkboxes
+    // for one decision.
+    group.single = group.items.length === 1
+    groups.push(group)
+  }
 
   // Loose last, matching where the container list puts it.
   return groups.sort(function(left, right) {
