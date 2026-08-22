@@ -116,15 +116,19 @@ Anything that does not serve one of those is decoration and does not ship.
 
 - **Colour is reserved for state.** Nothing else in the panel is coloured. A
   panel where six things are tinted teaches the eye to ignore tint.
-- **Degraded rows get a tinted background**, healthy rows get none. Problems
-  should be findable without reading, which is the same principle the mosaic
-  runs on.
+- **Degraded rows get a tinted background and a coloured left edge**, healthy
+  rows get neither. Problems should be findable without reading, which is the
+  same principle the mosaic runs on. The tint alone washes out against a busy
+  wallpaper; the edge is what actually carries down a long list.
 - **Actions appear on row hover**, except on degraded rows, where they stay
   visible — the row you need to act on should not require a hover to discover.
   The row reserves their width either way, so nothing shifts on hover.
-- **Two type roles only:** the interface font for names and labels, monospace
-  for numbers, status and ports. Mixing more is how a panel starts looking like
-  a spreadsheet.
+- **One family, hierarchy from size and weight.** The original rule here said
+  two type roles, an interface font beside the monospace one. That was wrong for
+  this platform: the whole Omarchy shell sets `fontFamily: "monospace"` on
+  purpose, and a proportional font would read as a widget from somewhere else.
+  Hierarchy comes from the size tokens — `bodySmall` for names, `caption` for
+  numbers and status — and from weight.
 - **Vertical rhythm over density.** The current 2px row spacing fits more and
   reads worse; go to one consistent step and let the list scroll.
 - **Group headers are heavier than rows**, and collapsible. Collapsed state is

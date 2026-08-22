@@ -531,11 +531,11 @@ Panel {
 
       Row {
         width: parent.width
-        spacing: Style.space(14)
+        spacing: Style.space(20)
         visible: root.daemonOk
 
         Gauge {
-          width: (parent.width - Style.space(28)) / 3
+          width: (parent.width - Style.space(40)) / 3
           label: "CPU"
           value: root.service ? root.service.gauges.cpu.value : 0
           max: 100
@@ -546,7 +546,7 @@ Panel {
         }
 
         Gauge {
-          width: (parent.width - Style.space(28)) / 3
+          width: (parent.width - Style.space(40)) / 3
           label: "RAM"
           value: root.service ? root.service.gauges.memory.value : 0
           max: root.service ? root.service.gauges.memory.max : 0
@@ -557,7 +557,7 @@ Panel {
         }
 
         Gauge {
-          width: (parent.width - Style.space(28)) / 3
+          width: (parent.width - Style.space(40)) / 3
           label: "DISCO"
           value: root.service ? root.service.gauges.disk.value : 0
           max: root.service ? root.service.gauges.disk.max : 0
@@ -643,7 +643,7 @@ Panel {
         Column {
           id: list
           width: flick.width
-          spacing: Style.space(4)
+          spacing: Style.space(6)
 
           Text {
             width: parent.width
@@ -666,13 +666,13 @@ Panel {
               readonly property bool collapsed: root.isCollapsed(modelData.project)
 
               width: list.width
-              spacing: Style.space(1)
+              spacing: Style.space(2)
 
               // --------------------------------------- stack header
 
               Rectangle {
                 width: parent.width
-                height: stackRow.implicitHeight + Style.space(8)
+                height: stackRow.implicitHeight + Style.space(10)
                 radius: Style.cornerRadius > 0 ? Style.space(4) : 0
                 color: stackHover.containsMouse
                   ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
@@ -720,7 +720,10 @@ Panel {
                     textFormat: Text.PlainText
                     color: root.foreground
                     font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
+                    // Hierarchy comes from size and weight, not from a second
+                    // family: the whole shell is monospace by design, and a
+                    // proportional font here would read as a foreign widget.
+                    font.pixelSize: Style.font.bodySmall
                     font.bold: true
                     elide: Text.ElideRight
                     width: parent.width - stackActions.implicitWidth - Style.space(90)
@@ -802,19 +805,31 @@ Panel {
                     : (modelData.cell === "warn" ? Color.accent : root.foreground)
 
                   width: list.width
-                  height: containerRow.implicitHeight + Style.space(7)
+                  height: containerRow.implicitHeight + Style.space(9)
                   radius: Style.cornerRadius > 0 ? Style.space(4) : 0
 
                   // Degraded rows are tinted so a problem is findable without
                   // reading — the same principle the mosaic runs on. Healthy
                   // rows stay plain, or the tint stops meaning anything.
                   color: row.degraded
-                    ? Qt.rgba(row.stateColor.r, row.stateColor.g, row.stateColor.b, 0.10)
+                    ? Qt.rgba(row.stateColor.r, row.stateColor.g, row.stateColor.b, 0.16)
                     : (rowHover.containsMouse
                       ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
                       : "transparent")
 
                   Behavior on color { ColorAnimation { duration: 120 } }
+
+                  // A tint alone washes out against a busy wallpaper. The edge
+                  // is what actually carries down the list at a glance.
+                  Rectangle {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: Style.space(2)
+                    radius: parent.radius
+                    visible: row.degraded
+                    color: row.stateColor
+                  }
 
                   MouseArea {
                     id: rowHover
@@ -847,7 +862,7 @@ Panel {
                       textFormat: Text.PlainText
                       color: root.foreground
                       font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
+                      font.pixelSize: Style.font.bodySmall
                       elide: Text.ElideRight
                       width: Style.space(112)
                     }
@@ -860,15 +875,23 @@ Panel {
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       elide: Text.ElideRight
-                      width: Style.space(92)
+                      // Takes whatever is left rather than a fixed column: a
+                      // fixed one leaves a hole in the middle of every row on a
+                      // wide card, and truncates on a narrow one.
+                      width: Math.max(Style.space(50),
+                        containerRow.width - Style.space(112) - portsRow.width
+                          - Style.space(88) - rowActions.implicitWidth - Style.space(40))
                     }
 
                     // Ports: clickable, and marked when something else already
                     // holds them. The engine's own error at start time names
                     // the port and not the culprit.
                     Row {
+                      id: portsRow
                       anchors.verticalCenter: parent.verticalCenter
-                      width: Style.space(74)
+                      // Collapses when there is nothing published, instead of
+                      // holding a column of empty space down the whole list.
+                      width: row.modelData.ports.length > 0 ? Style.space(74) : 0
                       spacing: Style.space(4)
 
                       Repeater {
@@ -926,6 +949,7 @@ Panel {
                     // need to act on should not require a hover to discover.
                     // The width is reserved either way, so nothing shifts.
                     Row {
+                      id: rowActions
                       anchors.verticalCenter: parent.verticalCenter
                       spacing: Style.space(2)
                       opacity: row.busy ? 0.4

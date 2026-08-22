@@ -28,7 +28,7 @@ Item {
   Column {
     id: column
     width: parent.width
-    spacing: Style.space(3)
+    spacing: Style.space(4)
 
     Row {
       width: parent.width
@@ -36,6 +36,7 @@ Item {
       Text {
         text: root.label
         color: root.dim
+        font.bold: true
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         width: parent.width - reading.implicitWidth
