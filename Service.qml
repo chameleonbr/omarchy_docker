@@ -60,6 +60,13 @@ Item {
     statsOnBattery = settings.statsOnBattery === true
     notificationsEnabled = settings.notifications !== false
     logTail = Math.max(20, Number(settings.logTail || 200))
+
+    var wanted = String(settings.engine || "auto")
+    if (wanted !== enginePreference) {
+      enginePreference = wanted
+      if (wanted !== "auto") applyEngine(wanted)
+      else engineCheck.running = true
+    }
   }
 
   function setWidgetVisible(visible) {
@@ -276,7 +283,13 @@ Item {
     dfProcess.running = true
   }
 
-  onOpenPanelsChanged: if (openPanels > 0) sampleDf()
+  onOpenPanelsChanged: {
+    if (openPanels <= 0) return
+    // Everything the header needs, gathered only while someone is looking.
+    sampleDf()
+    sampleHostDisk()
+    checkAutostart()
+  }
 
   Process {
     id: dfProcess
@@ -463,6 +476,121 @@ Item {
   function openUrl(url) {
     if (!url) return
     launch(["omarchy-launch-browser", url])
+  }
+
+  // ----------------------------------------------------------- engine
+  //
+  // Podman answers the same commands; which one is present decides the prefix.
+  // `auto` prefers docker when both are installed, because a machine with both
+  // is nearly always a docker machine with podman along for the ride.
+
+  property string enginePreference: "auto"
+  readonly property string engineName: Docker.engine()
+  readonly property string engineLabel: Docker.engineLabel()
+
+  function applyEngine(name) {
+    if (Docker.engine() === name) return
+    Docker.setEngine(name)
+    // Everything cached describes the other engine.
+    containers = []
+    statsById = ({})
+    dfRows = []
+    seenFirstSnapshot = false
+    restartStream()
+    refresh()
+  }
+
+  Process {
+    id: engineCheck
+    command: ["sh", "-c", "command -v docker >/dev/null && echo docker || (command -v podman >/dev/null && echo podman)"]
+    running: true
+
+    stdout: SplitParser {
+      onRead: function(line) {
+        var found = line.trim()
+        if (!found) return
+        root.applyEngine(root.enginePreference === "auto" ? found : root.enginePreference)
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ host disk
+
+  property var hostDisk: ({ used: 0, total: 0 })
+
+  Process {
+    id: diskProcess
+
+    stdout: StdioCollector {
+      id: diskStdout
+      waitForEnd: true
+      onStreamFinished: root.hostDisk = Docker.parseHostDisk(diskStdout.text)
+    }
+  }
+
+  function sampleHostDisk() {
+    if (diskProcess.running) return
+    diskProcess.command = Docker.hostDiskCommand()
+    diskProcess.running = true
+  }
+
+  readonly property var gauges: Docker.gauges(aggregate, dfRows, hostDisk)
+
+  // ------------------------------------------------------- port conflicts
+
+  readonly property var conflicts: Docker.portConflicts(containers)
+
+  function conflictFor(id) {
+    return conflicts[id] || null
+  }
+
+  // ------------------------------------------------------ daemon control
+
+  property string daemonAutostart: "unknown"
+
+  Process {
+    id: autostartCheck
+
+    stdout: StdioCollector {
+      id: autostartStdout
+      waitForEnd: true
+      onStreamFinished: root.daemonAutostart = autostartStdout.text.trim() || "unknown"
+    }
+  }
+
+  function checkAutostart() {
+    if (autostartCheck.running) return
+    autostartCheck.command = Docker.daemonStatusCommand()
+    autostartCheck.running = true
+  }
+
+  // The daemon is the one action here that is not a container action, so it
+  // gets its own slot rather than the queue — the queue exists to serialise
+  // work against containers that may not survive it.
+  Process { id: daemonProcess }
+
+  function runDaemon(action) {
+    if (daemonProcess.running) return
+    var command = Docker.daemonCommand(action)
+    if (command.length === 0) return
+    daemonProcess.command = command
+    daemonProcess.running = true
+  }
+
+  Connections {
+    target: daemonProcess
+    function onExited() {
+      root.checkAutostart()
+      root.refresh()
+      root.restartStream()
+    }
+  }
+
+  function restartStream() {
+    eventAttempt = 0
+    if (eventsProcess.running) eventsProcess.running = false
+    eventsProcess.command = Docker.eventsCommand()
+    eventsProcess.running = true
   }
 
   // ------------------------------------------------------ compose check

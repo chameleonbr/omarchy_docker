@@ -187,7 +187,12 @@ Panel {
   }
 
   onVisibleChanged: syncVisibility()
-  onOpenedChanged: if (service) service.setPanelOpen(opened)
+  onOpenedChanged: {
+    if (service) service.setPanelOpen(opened)
+    // A filter that survives a close will eventually convince someone their
+    // containers are gone.
+    if (!opened) query = ""
+  }
 
   Component.onDestruction: {
     if (!service) return
@@ -237,6 +242,7 @@ Panel {
   // Anything that deletes goes through here. The message says what will be
   // removed and how much, because "are you sure?" teaches people to click yes.
   property var pendingConfirm: null
+  property bool cleanupOpen: false
 
   function askConfirm(message, confirmText, action) {
     pendingConfirm = action
@@ -385,399 +391,680 @@ Panel {
 
   // ------------------------------------------------------------- popup
 
+  // Filter state. The query resets when the popup closes — a filter that
+  // survives will eventually convince someone their containers are gone. The
+  // view chip persists, because that one is a preference.
+  property string query: ""
+  property string view: String(setting("view", "all"))
+  property var collapsedStacks: ({})
+
+  readonly property var visibleContainers:
+    Docker.searchContainers(containers, { view: root.view, query: root.query })
+
+  readonly property var visibleGroups: service
+    ? Docker.sortGroups(Docker.groupByProject(visibleContainers)) : []
+
+  readonly property bool filtering: query !== "" || view !== "all"
+
+  function toggleStack(project) {
+    var next = Object.assign({}, collapsedStacks)
+    if (next[project]) delete next[project]
+    else next[project] = true
+    collapsedStacks = next
+  }
+
+  function isCollapsed(project) {
+    return collapsedStacks[project] === true
+  }
+
   PopupCard {
     id: card
     anchorItem: button
     owner: root
     bar: root.bar
     open: root.opened
-    contentWidth: card.fittedContentWidth(Style.space(640))
-    contentHeight: card.fittedContentHeight(list.implicitHeight, Style.space(760))
+    contentWidth: card.fittedContentWidth(Style.space(660))
+    contentHeight: card.fittedContentHeight(shell.implicitHeight, Style.space(820))
 
-    Flickable {
-      id: flick
-      anchors.fill: parent
-      // Children of a Flickable are reparented onto its contentItem, whose
-      // width is contentWidth and defaults to zero. Binding the column to
-      // `parent.width` therefore gives it zero width, every label elides to
-      // nothing, the column reports no height, and the popup opens invisible.
-      contentWidth: width
-      contentHeight: list.implicitHeight
-      clip: true
-      boundsBehavior: Flickable.StopAtBounds
+    Column {
+      id: shell
+      width: parent.width
+      spacing: Style.space(10)
 
-      Column {
-        id: list
-        width: flick.width
-        spacing: Style.space(6)
+      // ------------------------------------------------------- header
 
-        // ---------------------------------------------------- header
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
 
-        Item {
-          width: parent.width
-          height: header.implicitHeight
+        Rectangle {
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(7)
+          height: Style.space(7)
+          radius: width / 2
+          color: root.daemonOk
+            ? (root.summary.worst === "bad" ? (bar ? bar.urgent : Color.urgent)
+              : (root.summary.worst === "warn" ? Color.accent : root.foreground))
+            : (bar ? bar.urgent : Color.urgent)
+        }
 
-          Row {
-            id: header
-            width: parent.width
-            spacing: Style.space(8)
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.service ? root.service.engineLabel : "Docker"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          font.bold: true
+        }
 
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.daemonOk
-                ? root.summary.running + "/" + root.summary.total + " containers"
-                : (root.service ? root.service.errorText : "Docker indisponível")
-              color: root.daemonOk ? root.foreground : (bar ? bar.urgent : Color.urgent)
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              font.bold: true
-              width: parent.width - actions.implicitWidth - Style.space(8)
-              elide: Text.ElideRight
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          // While a filter is on, the count says how much is hidden — a
+          // filtered list must never look like a machine that lost containers.
+          text: {
+            if (!root.daemonOk) return root.service ? root.service.errorText : "indisponível"
+            if (root.filtering) return root.visibleContainers.length + " de "
+              + root.summary.total + " containers"
+            return root.summary.running + "/" + root.summary.total + " containers"
+          }
+          color: root.daemonOk ? root.dim : (bar ? bar.urgent : Color.urgent)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          width: parent.width - headerActions.implicitWidth - Style.space(140)
+          elide: Text.ElideRight
+        }
+
+        Row {
+          id: headerActions
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(2)
+
+          PanelActionButton {
+            iconText: root.daemonOk ? "󰓛" : "󰐊"
+            tooltipText: root.daemonOk
+              ? "Parar o daemon (e o socket)"
+              : "Iniciar o daemon"
+            foreground: root.dim
+            hoverColor: root.foreground
+            onClicked: {
+              if (!root.service) return
+              if (!root.daemonOk) { root.service.runDaemon("start"); return }
+              root.askConfirm(
+                "Parar o daemon do " + root.service.engineLabel + "?\n"
+                  + "Todo container em execução para junto.",
+                "Parar",
+                function() { root.service.runDaemon("stop") })
             }
+          }
 
-            Row {
-              id: actions
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(2)
+          PanelActionButton {
+            iconText: root.service && root.service.daemonAutostart === "enabled" ? "󰐥" : "󰤄"
+            tooltipText: root.service && root.service.daemonAutostart === "enabled"
+              ? "Inicia junto com o sistema — clique para desligar"
+              : "Não inicia com o sistema — clique para ligar"
+            foreground: root.service && root.service.daemonAutostart === "enabled"
+              ? Color.accent : root.dim
+            hoverColor: root.foreground
+            onClicked: if (root.service) root.service.runDaemon(
+              root.service.daemonAutostart === "enabled" ? "disable" : "enable")
+          }
 
-              PanelActionButton {
-                iconText: "󰑓"
-                tooltipText: "Atualizar"
-                foreground: root.dim
-                hoverColor: root.foreground
-                onClicked: if (root.service) root.service.refresh()
-              }
+          PanelActionButton {
+            iconText: "󰑓"
+            tooltipText: "Atualizar"
+            foreground: root.dim
+            hoverColor: root.foreground
+            onClicked: if (root.service) root.service.refresh()
+          }
 
-              PanelActionButton {
-                iconText: "󰡨"
-                tooltipText: "Abrir lazydocker"
-                foreground: root.dim
-                hoverColor: root.foreground
-                onClicked: if (root.service) root.service.openLazydocker(null, root.monitorName)
-              }
+          PanelActionButton {
+            iconText: "󰡨"
+            tooltipText: "Abrir lazydocker"
+            foreground: root.dim
+            hoverColor: root.foreground
+            onClicked: if (root.service) root.service.openLazydocker(null, root.monitorName)
+          }
+        }
+      }
+
+      // ------------------------------------------------------- gauges
+
+      Row {
+        width: parent.width
+        spacing: Style.space(14)
+        visible: root.daemonOk
+
+        Gauge {
+          width: (parent.width - Style.space(28)) / 3
+          label: "CPU"
+          value: root.service ? root.service.gauges.cpu.value : 0
+          max: 100
+          text: root.service ? root.service.gauges.cpu.text : "—"
+          foreground: root.foreground
+          dim: root.dim
+          fontFamily: root.fontFamily
+        }
+
+        Gauge {
+          width: (parent.width - Style.space(28)) / 3
+          label: "RAM"
+          value: root.service ? root.service.gauges.memory.value : 0
+          max: root.service ? root.service.gauges.memory.max : 0
+          text: root.service ? root.service.gauges.memory.text : "—"
+          foreground: root.foreground
+          dim: root.dim
+          fontFamily: root.fontFamily
+        }
+
+        Gauge {
+          width: (parent.width - Style.space(28)) / 3
+          label: "DISCO"
+          value: root.service ? root.service.gauges.disk.value : 0
+          max: root.service ? root.service.gauges.disk.max : 0
+          text: root.service ? root.service.gauges.disk.text : "—"
+          foreground: root.foreground
+          dim: root.dim
+          fontFamily: root.fontFamily
+        }
+      }
+
+      // ------------------------------------------------------ toolbar
+
+      Row {
+        width: parent.width
+        spacing: Style.space(6)
+        visible: root.daemonOk
+
+        TextField {
+          id: search
+          anchors.verticalCenter: parent.verticalCenter
+          width: parent.width - chips.implicitWidth - Style.space(6)
+          placeholderText: "serviço, stack, container ou imagem"
+          foreground: root.foreground
+          onTextChanged: root.query = text
+        }
+
+        Row {
+          id: chips
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(2)
+
+          Repeater {
+            model: [
+              { key: "all", label: "todos" },
+              { key: "running", label: "rodando" },
+              { key: "stopped", label: "parados" }
+            ]
+
+            Chip {
+              required property var modelData
+              label: modelData.label
+              selected: root.view === modelData.key
+              foreground: root.foreground
+              dim: root.dim
+              fontFamily: root.fontFamily
+              onClicked: root.view = modelData.key
             }
           }
         }
+      }
 
-        // ---------------------------------------------------- stacks
+      // --------------------------------------------------- daemon down
 
-        Repeater {
-          model: root.groups
+      Column {
+        width: parent.width
+        spacing: Style.space(6)
+        visible: !root.daemonOk
 
-          Column {
-            required property var modelData
+        Text {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          // A list of zero containers with a dozen dead buttons is worse than
+          // one sentence saying why there is nothing here.
+          text: root.service ? root.service.errorText : ""
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
 
-            width: list.width
-            spacing: Style.space(2)
+      // --------------------------------------------------------- list
 
-            PanelSeparator { width: parent.width }
+      Flickable {
+        id: flick
+        width: parent.width
+        height: Math.min(list.implicitHeight, Style.space(520))
+        visible: root.daemonOk
+        contentWidth: width
+        contentHeight: list.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
 
-            // ------------------------------------- stack header
+        Column {
+          id: list
+          width: flick.width
+          spacing: Style.space(4)
 
-            Row {
-              width: parent.width
-              spacing: Style.space(6)
+          Text {
+            width: parent.width
+            visible: root.visibleContainers.length === 0
+            text: root.filtering
+              ? "Nenhum container com esse filtro."
+              : "Nenhum container."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Repeater {
+            model: root.visibleGroups
+
+            Column {
+              id: stackBlock
+              required property var modelData
+
+              readonly property bool collapsed: root.isCollapsed(modelData.project)
+
+              width: list.width
+              spacing: Style.space(1)
+
+              // --------------------------------------- stack header
 
               Rectangle {
-                anchors.verticalCenter: parent.verticalCenter
-                width: Style.space(6)
-                height: Style.space(6)
-                radius: width / 2
-                color: modelData.worst === "bad"
-                  ? (bar ? bar.urgent : Color.urgent)
-                  : (modelData.worst === "warn" ? Color.accent : root.foreground)
-                opacity: modelData.worst === "idle" ? 0.35 : 1
-              }
+                width: parent.width
+                height: stackRow.implicitHeight + Style.space(8)
+                radius: Style.cornerRadius > 0 ? Style.space(4) : 0
+                color: stackHover.containsMouse
+                  ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                  : "transparent"
 
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: modelData.project
-                // Plain text, always: `service` and `project` come from image
-                // labels, which any image can set to anything. Qt's AutoText
-                // would parse a crafted one as rich text.
-                textFormat: Text.PlainText
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                elide: Text.ElideRight
-                width: parent.width - stackActions.implicitWidth - Style.space(60)
-              }
+                MouseArea {
+                  id: stackHover
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.toggleStack(stackBlock.modelData.project)
+                }
 
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: modelData.running + "/" + modelData.total
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
+                Row {
+                  id: stackRow
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: Style.space(6)
+                  anchors.rightMargin: Style.space(6)
+                  spacing: Style.space(6)
 
-              Row {
-                id: stackActions
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(2)
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: stackBlock.collapsed ? "▸" : "▾"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
 
-                PanelActionButton {
-                  // Whether the stack is up decides which half of the pair is
-                  // offered: a stack with nothing running has nothing to stop.
-                  iconText: modelData.running > 0 ? "󰓛" : "󰐊"
-                  tooltipText: modelData.running > 0
-                    ? "Parar o stack inteiro"
-                    : "Iniciar o stack inteiro"
-                  foreground: root.dim
-                  hoverColor: root.foreground
-                  enabled: root.service && !root.service.isBusy(modelData.project)
-                  opacity: enabled ? 1 : 0.4
-                  onClicked: {
-                    if (!root.service) return
-                    root.service.runStack(
-                      modelData.running > 0 ? "stop" : "start", modelData)
+                  Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(6)
+                    height: Style.space(6)
+                    radius: width / 2
+                    color: stackBlock.modelData.worst === "bad"
+                      ? (bar ? bar.urgent : Color.urgent)
+                      : (stackBlock.modelData.worst === "warn" ? Color.accent : root.foreground)
+                    opacity: stackBlock.modelData.worst === "idle" ? 0.35 : 1
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: stackBlock.modelData.project
+                    textFormat: Text.PlainText
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    elide: Text.ElideRight
+                    width: parent.width - stackActions.implicitWidth - Style.space(90)
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: stackBlock.modelData.running + "/" + stackBlock.modelData.total
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Row {
+                    id: stackActions
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(2)
+
+                    PanelActionButton {
+                      iconText: stackBlock.modelData.running > 0 ? "󰓛" : "󰐊"
+                      tooltipText: stackBlock.modelData.running > 0
+                        ? "Parar o stack inteiro" : "Iniciar o stack inteiro"
+                      foreground: root.dim
+                      hoverColor: root.foreground
+                      enabled: root.service && !root.service.isBusy(stackBlock.modelData.project)
+                      opacity: enabled ? 1 : 0.4
+                      onClicked: {
+                        if (!root.service) return
+                        root.service.runStack(
+                          stackBlock.modelData.running > 0 ? "stop" : "start", stackBlock.modelData)
+                      }
+                    }
+
+                    PanelActionButton {
+                      iconText: "󰑓"
+                      tooltipText: "Reiniciar o stack"
+                      foreground: root.dim
+                      hoverColor: root.foreground
+                      enabled: root.service && !root.service.isBusy(stackBlock.modelData.project)
+                      opacity: enabled ? 1 : 0.4
+                      onClicked: if (root.service)
+                        root.service.runStack("restart", stackBlock.modelData)
+                    }
+
+                    PanelActionButton {
+                      iconText: "󰡨"
+                      tooltipText: Docker.canScopeLazydocker(stackBlock.modelData)
+                        ? "lazydocker neste stack"
+                        : "lazydocker (sem stack para escopar)"
+                      foreground: root.dim
+                      hoverColor: root.foreground
+                      onClicked: if (root.service)
+                        root.service.openLazydocker(stackBlock.modelData, root.monitorName)
+                    }
                   }
                 }
-
-                PanelActionButton {
-                  iconText: "󰑓"
-                  tooltipText: "Reiniciar o stack"
-                  foreground: root.dim
-                  hoverColor: root.foreground
-                  enabled: root.service && !root.service.isBusy(modelData.project)
-                  opacity: enabled ? 1 : 0.4
-                  onClicked: if (root.service) root.service.runStack("restart", modelData)
-                }
-
-                PanelActionButton {
-                  iconText: "󰡨"
-                  // Loose containers were not started by compose, so there is no
-                  // project for lazydocker to scope to.
-                  tooltipText: Docker.canScopeLazydocker(modelData)
-                    ? "lazydocker neste stack"
-                    : "lazydocker (sem stack para escopar)"
-                  foreground: root.dim
-                  hoverColor: root.foreground
-                  onClicked: if (root.service) root.service.openLazydocker(modelData, root.monitorName)
-                }
               }
-            }
 
-            // ---------------------------------------- containers
+              // ----------------------------------------- containers
 
-            Repeater {
-              model: modelData.containers
-
-              Row {
-                id: portRow
-                required property var modelData
-
-                readonly property var containerData: modelData
-                readonly property var actions: Docker.containerActions(modelData)
-                readonly property var sample: root.service
-                  ? root.service.statsFor(modelData.id) : null
-                readonly property bool busy: root.service
-                  ? root.service.isBusy(modelData.id) : false
-
-                width: list.width
-                spacing: Style.space(6)
-                leftPadding: Style.space(12)
+              Repeater {
+                model: stackBlock.collapsed ? [] : stackBlock.modelData.containers
 
                 Rectangle {
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(5)
-                  height: Style.space(5)
-                  radius: width / 2
-                  color: modelData.cell === "bad"
+                  id: row
+                  required property var modelData
+
+                  readonly property var actions: Docker.containerActions(modelData)
+                  readonly property var sample: root.service
+                    ? root.service.statsFor(modelData.id) : null
+                  readonly property var conflict: root.service
+                    ? root.service.conflictFor(modelData.id) : null
+                  readonly property bool busy: root.service
+                    ? root.service.isBusy(modelData.id) : false
+                  readonly property bool degraded:
+                    modelData.cell === "bad" || modelData.cell === "warn"
+                  readonly property color stateColor: modelData.cell === "bad"
                     ? (bar ? bar.urgent : Color.urgent)
                     : (modelData.cell === "warn" ? Color.accent : root.foreground)
-                  opacity: modelData.cell === "idle" ? 0.35 : 1
-                }
 
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: modelData.service
-                  textFormat: Text.PlainText
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                  width: Style.space(112)
-                }
+                  width: list.width
+                  height: containerRow.implicitHeight + Style.space(7)
+                  radius: Style.cornerRadius > 0 ? Style.space(4) : 0
 
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  text: modelData.status
-                  textFormat: Text.PlainText
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                  width: Style.space(88)
-                }
+                  // Degraded rows are tinted so a problem is findable without
+                  // reading — the same principle the mosaic runs on. Healthy
+                  // rows stay plain, or the tint stops meaning anything.
+                  color: row.degraded
+                    ? Qt.rgba(row.stateColor.r, row.stateColor.g, row.stateColor.b, 0.10)
+                    : (rowHover.containsMouse
+                      ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                      : "transparent")
 
-                // A published port is something to open, not to read out.
-                Row {
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(64)
-                  spacing: Style.space(4)
+                  Behavior on color { ColorAnimation { duration: 120 } }
 
-                  Repeater {
-                    model: modelData.ports.slice(0, 2)
+                  MouseArea {
+                    id: rowHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                  }
+
+                  Row {
+                    id: containerRow
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(20)
+                    anchors.rightMargin: Style.space(6)
+                    spacing: Style.space(6)
+
+                    Rectangle {
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: Style.space(5)
+                      height: Style.space(5)
+                      radius: width / 2
+                      color: row.stateColor
+                      opacity: row.modelData.cell === "idle" ? 0.35 : 1
+                    }
 
                     Text {
-                      required property var modelData
-                      readonly property var container: portRow.containerData
-
-                      text: modelData
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: row.modelData.service
                       textFormat: Text.PlainText
-                      color: portMouse.containsMouse ? Color.accent : root.dim
+                      color: root.foreground
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
-                      font.underline: portMouse.containsMouse
+                      elide: Text.ElideRight
+                      width: Style.space(112)
+                    }
 
-                      MouseArea {
-                        id: portMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: row.modelData.status
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                      width: Style.space(92)
+                    }
+
+                    // Ports: clickable, and marked when something else already
+                    // holds them. The engine's own error at start time names
+                    // the port and not the culprit.
+                    Row {
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: Style.space(74)
+                      spacing: Style.space(4)
+
+                      Repeater {
+                        model: row.modelData.ports.slice(0, 2)
+
+                        Text {
+                          required property var modelData
+
+                          readonly property bool blocked: {
+                            var list = row.conflict || []
+                            for (var i = 0; i < list.length; i++) {
+                              if (list[i].port === modelData) return true
+                            }
+                            return false
+                          }
+
+                          text: (blocked ? "⚠" : "") + modelData
+                          textFormat: Text.PlainText
+                          color: blocked
+                            ? (bar ? bar.urgent : Color.urgent)
+                            : (portMouse.containsMouse ? Color.accent : root.dim)
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          font.underline: portMouse.containsMouse && !blocked
+
+                          MouseArea {
+                            id: portMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onEntered: if (parent.blocked && root.bar)
+                              root.bar.showTooltip(parent, Docker.conflictText(row.conflict))
+                            onExited: if (root.bar) root.bar.hideTooltip(parent)
+                            onClicked: if (root.service && !parent.blocked)
+                              root.service.openPort(parent.modelData, root.monitorName)
+                          }
+                        }
+                      }
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: row.sample
+                        ? Docker.formatPercent(row.sample.cpu) + " · "
+                          + Docker.formatBytes(row.sample.memUsed)
+                        : "—"
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      horizontalAlignment: Text.AlignRight
+                      width: Style.space(88)
+                    }
+
+                    // Revealed on hover, except on a degraded row: the row you
+                    // need to act on should not require a hover to discover.
+                    // The width is reserved either way, so nothing shifts.
+                    Row {
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(2)
+                      opacity: row.busy ? 0.4
+                        : (row.degraded || rowHover.containsMouse ? 1 : 0)
+
+                      Behavior on opacity { NumberAnimation { duration: 120 } }
+
+                      PanelActionButton {
+                        iconText: "󰈙"
+                        tooltipText: "Logs"
+                        foreground: root.dim
+                        hoverColor: root.foreground
                         onClicked: if (root.service)
-                          root.service.openPort(parent.text, root.monitorName)
+                          root.service.openContainerView("logs", row.modelData, root.monitorName)
+                      }
+
+                      PanelActionButton {
+                        iconText: "󰚩"
+                        tooltipText: "Analisar o log com o agente padrão"
+                        foreground: root.dim
+                        hoverColor: root.foreground
+                        onClicked: if (root.service)
+                          root.service.askAgent(row.modelData, root.monitorName)
+                      }
+
+                      PanelActionButton {
+                        iconText: "󰆍"
+                        tooltipText: "Shell no container"
+                        foreground: root.dim
+                        hoverColor: root.foreground
+                        visible: row.actions.canShell
+                        onClicked: if (root.service)
+                          root.service.openContainerView("shell", row.modelData, root.monitorName)
+                      }
+
+                      PanelActionButton {
+                        iconText: "󰐊"
+                        tooltipText: "Despausar"
+                        foreground: root.dim
+                        hoverColor: root.foreground
+                        visible: row.actions.canUnpause
+                        enabled: !row.busy
+                        onClicked: if (root.service)
+                          root.service.runContainer("unpause", row.modelData)
+                      }
+
+                      PanelActionButton {
+                        iconText: row.actions.canStop ? "󰓛" : "󰐊"
+                        tooltipText: row.actions.canStop ? "Parar" : "Iniciar"
+                        foreground: root.dim
+                        hoverColor: root.foreground
+                        visible: (row.actions.canStop || row.actions.canStart)
+                          && !row.actions.canUnpause
+                        enabled: !row.busy
+                        onClicked: {
+                          if (!root.service) return
+                          root.service.runContainer(
+                            row.actions.canStop ? "stop" : "start", row.modelData)
+                        }
+                      }
+
+                      PanelActionButton {
+                        iconText: "󰑓"
+                        tooltipText: "Reiniciar"
+                        foreground: root.dim
+                        hoverColor: root.foreground
+                        visible: row.actions.canRestart
+                        enabled: !row.busy
+                        onClicked: if (root.service)
+                          root.service.runContainer("restart", row.modelData)
+                      }
+
+                      PanelActionButton {
+                        iconText: "󰩹"
+                        tooltipText: "Remover o container"
+                        foreground: root.dim
+                        hoverColor: bar ? bar.urgent : Color.urgent
+                        visible: row.actions.canRemove
+                        enabled: !row.busy
+                        onClicked: root.askConfirm(
+                          Docker.removeConfirmMessage(row.modelData),
+                          "Remover",
+                          function() { if (root.service) root.service.removeContainer(row.modelData) })
                       }
                     }
                   }
                 }
-
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  // An em dash where there is no sample yet: zero would be a
-                  // measurement, and this is the absence of one.
-                  text: sample
-                    ? Docker.formatPercent(sample.cpu) + " · " + Docker.formatBytes(sample.memUsed)
-                    : "—"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  horizontalAlignment: Text.AlignRight
-                  width: Style.space(88)
-                }
-
-                Row {
-                  anchors.verticalCenter: parent.verticalCenter
-                  spacing: Style.space(2)
-                  opacity: busy ? 0.4 : 1
-
-                  PanelActionButton {
-                    // Material Design range only: the bar font on this system
-                    // has no Font Awesome glyphs, and a missing one renders as
-                    // nothing at all — a button that is simply not there.
-                    iconText: "󰈙"
-                    tooltipText: "Logs"
-                    foreground: root.dim
-                    hoverColor: root.foreground
-                    onClicked: if (root.service) root.service.openContainerView("logs", modelData, root.monitorName)
-                  }
-
-                  PanelActionButton {
-                    iconText: "󰚩"
-                    tooltipText: "Analisar o log com o agente padrão"
-                    foreground: root.dim
-                    hoverColor: root.foreground
-                    onClicked: if (root.service) root.service.askAgent(modelData, root.monitorName)
-                  }
-
-                  PanelActionButton {
-                    iconText: "󰆍"
-                    tooltipText: "Shell no container"
-                    foreground: root.dim
-                    hoverColor: root.foreground
-                    visible: portRow.actions.canShell
-                    onClicked: if (root.service) root.service.openContainerView("shell", modelData, root.monitorName)
-                  }
-
-                  PanelActionButton {
-                    iconText: "󰐊"
-                    tooltipText: "Despausar"
-                    foreground: root.dim
-                    hoverColor: root.foreground
-                    visible: portRow.actions.canUnpause
-                    enabled: !busy
-                    onClicked: if (root.service) root.service.runContainer("unpause", modelData)
-                  }
-
-                  PanelActionButton {
-                    // Only the action the container can actually take: a start
-                    // button on something that is already up teaches people
-                    // that the buttons are decoration.
-                    iconText: portRow.actions.canStop ? "󰓛" : "󰐊"
-                    tooltipText: portRow.actions.canStop ? "Parar" : "Iniciar"
-                    foreground: root.dim
-                    hoverColor: root.foreground
-                    visible: (portRow.actions.canStop || portRow.actions.canStart)
-                      && !portRow.actions.canUnpause
-                    enabled: !busy
-                    onClicked: {
-                      if (!root.service) return
-                      root.service.runContainer(portRow.actions.canStop ? "stop" : "start", modelData)
-                    }
-                  }
-
-                  PanelActionButton {
-                    iconText: "󰑓"
-                    tooltipText: "Reiniciar"
-                    foreground: root.dim
-                    hoverColor: root.foreground
-                    visible: portRow.actions.canRestart
-                    enabled: !busy
-                    onClicked: if (root.service) root.service.runContainer("restart", modelData)
-                  }
-
-                  PanelActionButton {
-                    iconText: "󰩹"
-                    tooltipText: "Remover o container"
-                    foreground: root.dim
-                    hoverColor: bar ? bar.urgent : Color.urgent
-                    visible: portRow.actions.canRemove
-                    enabled: !busy
-                    onClicked: root.askConfirm(
-                      Docker.removeConfirmMessage(modelData),
-                      "Remover",
-                      function() { if (root.service) root.service.removeContainer(modelData) })
-                  }
-                }
               }
             }
           }
         }
-        // -------------------------------------------------- clean up
+      }
+
+      // ------------------------------------------------------- footer
+
+      Column {
+        width: parent.width
+        spacing: Style.space(3)
+        visible: root.daemonOk && root.service && root.service.dfRows.length > 0
+
+        PanelSeparator { width: parent.width }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Espaço recuperável"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.service ? Docker.formatBytes(root.service.reclaimable) : ""
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            width: parent.width - Style.space(180)
+            horizontalAlignment: Text.AlignRight
+          }
+
+          Chip {
+            anchors.verticalCenter: parent.verticalCenter
+            label: root.cleanupOpen ? "fechar" : "ver"
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
+            onClicked: root.cleanupOpen = !root.cleanupOpen
+          }
+        }
 
         Column {
-          width: list.width
+          width: parent.width
           spacing: Style.space(2)
-          visible: root.daemonOk && root.service && root.service.dfRows.length > 0
-
-          PanelSeparator { width: parent.width }
-
-          Row {
-            width: parent.width
-            spacing: Style.space(6)
-
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Espaço recuperável"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              width: parent.width - reclaimTotal.implicitWidth - Style.space(6)
-              elide: Text.ElideRight
-            }
-
-            Text {
-              id: reclaimTotal
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.service ? Docker.formatBytes(root.service.reclaimable) : ""
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-          }
+          visible: root.cleanupOpen
 
           Repeater {
             model: root.service ? root.service.pruneTargets : []
@@ -789,7 +1076,7 @@ Panel {
                 ? root.service.isBusy(modelData.id) : false
               readonly property bool worthIt: modelData.reclaimable !== 0
 
-              width: list.width
+              width: parent.width
               spacing: Style.space(6)
               leftPadding: Style.space(12)
               opacity: worthIt ? 1 : 0.4
@@ -801,15 +1088,12 @@ Panel {
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                width: Style.space(150)
+                width: Style.space(160)
                 elide: Text.ElideRight
               }
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                // A dash where the size is not knowable: `system df` has no row
-                // for dangling images, and printing 0B there would read as
-                // "nothing to do" when there may be plenty.
                 text: modelData.reclaimable >= 0
                   ? Docker.formatBytes(modelData.reclaimable) : "—"
                 color: root.dim
@@ -836,7 +1120,7 @@ Panel {
           }
 
           Row {
-            width: list.width
+            width: parent.width
             spacing: Style.space(6)
             leftPadding: Style.space(12)
             visible: root.service && root.service.volumesRow
@@ -846,7 +1130,7 @@ Panel {
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
-              width: Style.space(150)
+              width: Style.space(160)
             }
 
             Text {
@@ -860,8 +1144,6 @@ Panel {
             }
 
             Text {
-              // Listed, never pruned from here. Everything above can be rebuilt
-              // or pulled again; a volume is the one thing that is data.
               text: "não removido daqui"
               color: root.dim
               font.family: root.fontFamily

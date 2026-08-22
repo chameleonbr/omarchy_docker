@@ -1060,4 +1060,271 @@ check("notifications carry the container name and reach the user", () => {
   assert.ok(command.includes("critical"))
 })
 
+
+// --------------------------------------------------------------- engine
+
+check("the engine prefixes every command", () => {
+  try {
+    setEngine("podman")
+    assert.strictEqual(engine(), "podman")
+    assert.strictEqual(engineLabel(), "Podman")
+    assert.strictEqual(psCommand()[0], "podman")
+    assert.strictEqual(statsCommand()[0], "podman")
+    assert.strictEqual(imagesCommand()[0], "podman")
+    assert.strictEqual(containerCommand("restart", "abc")[0], "podman")
+    assert.deepStrictEqual(daemonCommand("start"), ["systemctl", "start", "podman.service"])
+    assert.strictEqual(pruneTargets([])[0].command[0], "podman")
+  } finally {
+    setEngine("docker")
+  }
+  assert.strictEqual(psCommand()[0], "docker")
+})
+
+check("anything that is not podman is docker", () => {
+  assert.strictEqual(setEngine("nonsense"), "docker")
+  assert.strictEqual(setEngine(""), "docker")
+})
+
+check("both output shapes parse: one object per line, or one array", () => {
+  // Docker prints JSON lines; Podman prints a JSON array.
+  const lines = '{"a":1}\n{"a":2}'
+  const array = '[{"a":1},{"a":2}]'
+
+  assert.deepStrictEqual(parseRows(lines), [{ a: 1 }, { a: 2 }])
+  assert.deepStrictEqual(parseRows(array), [{ a: 1 }, { a: 2 }])
+  assert.deepStrictEqual(parseRows(""), [])
+  assert.deepStrictEqual(parseRows("[not json"), [])
+  assert.deepStrictEqual(parseRows('{"a":1}\n{broken\n{"a":2}'), [{ a: 1 }, { a: 2 }],
+    "a broken line drops itself, not the batch")
+})
+
+// --------------------------------------------------------------- search
+
+check("search matches the four things someone might remember", () => {
+  const containers = parsePs(psFixture)
+  const byName = name => searchContainers(containers, { query: name })
+
+  assert.ok(byName("cache").length >= 1, "the service")
+  assert.ok(byName("web-shop").length >= 1, "the stack")
+  assert.ok(byName("scratchpad").length === 1, "the container name")
+  assert.ok(byName("redis").length >= 1, "the image")
+  assert.strictEqual(byName("nothing-like-this").length, 0)
+})
+
+check("search ignores case and surrounding space", () => {
+  const containers = parsePs(psFixture)
+  assert.deepStrictEqual(
+    searchContainers(containers, { query: "  CACHE " }).map(c => c.id),
+    searchContainers(containers, { query: "cache" }).map(c => c.id))
+})
+
+check("an empty query hides nothing", () => {
+  const containers = parsePs(psFixture)
+  assert.strictEqual(searchContainers(containers, { query: "" }).length, containers.length)
+  assert.strictEqual(searchContainers(containers, {}).length, containers.length)
+})
+
+check("the view chips split running from stopped, with nothing lost", () => {
+  const containers = parsePs(psFixture)
+  const running = searchContainers(containers, { view: "running" })
+  const stopped = searchContainers(containers, { view: "stopped" })
+
+  assert.strictEqual(running.length + stopped.length, containers.length,
+    "every container is in exactly one of the two")
+  assert.ok(running.every(c => c.state === "running" || c.state === "restarting"))
+  assert.ok(stopped.every(c => c.state !== "running" && c.state !== "restarting"))
+})
+
+check("a restarting container counts as running, not stopped", () => {
+  // It is trying. Filing it under "stopped" hides the thing most worth seeing.
+  const containers = parsePs(psFixture)
+  const restarting = containers.find(c => c.state === "restarting")
+
+  assert.ok(restarting, "the fixture has one")
+  assert.ok(searchContainers([restarting], { view: "running" }).length === 1)
+  assert.ok(searchContainers([restarting], { view: "stopped" }).length === 0)
+})
+
+check("chip and query compose", () => {
+  const containers = parsePs(psFixture)
+  const both = searchContainers(containers, { view: "stopped", query: "web-shop" })
+
+  assert.ok(both.length > 0)
+  assert.ok(both.every(c => c.state !== "running" && c.project === "web-shop"))
+})
+
+// -------------------------------------------------------- port conflicts
+
+check("a stopped container is told who is holding its port", () => {
+  // The engine's own error at that moment names the port and not the culprit,
+  // which is exactly the half you need.
+  const containers = [
+    { id: "up", name: "proxy", state: "running", ports: ["8080"] },
+    { id: "down", name: "old-proxy", state: "exited", ports: ["8080", "9000"] }
+  ]
+
+  const conflicts = portConflicts(containers)
+  assert.ok(conflicts.down, "the stopped one is flagged")
+  assert.deepStrictEqual(conflicts.down, [{ port: "8080", heldBy: "proxy" }])
+  assert.strictEqual(conflicts.up, undefined, "a running container is not in conflict with itself")
+  assert.ok(conflictText(conflicts.down).indexOf("proxy") > 0)
+})
+
+check("free ports raise no conflict", () => {
+  const containers = [
+    { id: "up", name: "proxy", state: "running", ports: ["8080"] },
+    { id: "down", name: "worker", state: "exited", ports: ["9000"] }
+  ]
+  assert.deepStrictEqual(portConflicts(containers), {})
+  assert.strictEqual(conflictText([]), "")
+})
+
+check("a restarting container still counts as holding its port", () => {
+  const containers = [
+    { id: "loop", name: "flaky", state: "restarting", ports: ["5432"] },
+    { id: "down", name: "db", state: "exited", ports: ["5432"] }
+  ]
+  assert.deepStrictEqual(portConflicts(containers).down, [{ port: "5432", heldBy: "flaky" }])
+})
+
+// ------------------------------------------------------------ resources
+
+const IMAGES_FIXTURE = [
+  '{"Containers":"1","CreatedSince":"2 days ago","ID":"9f0352b92205","Repository":"web-shop-api","Size":"764MB","Tag":"latest"}',
+  '{"Containers":"0","CreatedSince":"4 days ago","ID":"e5da6bcfd583","Repository":"<none>","Size":"2.78GB","Tag":"<none>"}'
+].join("\n")
+
+const VOLUMES_FIXTURE = [
+  '{"Driver":"local","Labels":"com.docker.volume.anonymous=","Name":"1b6e6559aea5","Size":"N/A"}',
+  '{"Driver":"local","Labels":"com.docker.compose.project=web-shop","Name":"web-shop_db","Size":"N/A"}'
+].join("\n")
+
+const NETWORKS_FIXTURE = [
+  '{"Driver":"bridge","ID":"fa2d23130033","Labels":"com.docker.compose.project=web-shop","Name":"web-shop_default"}',
+  '{"Driver":"bridge","ID":"583fcd34ec9e","Labels":"","Name":"bridge"}',
+  '{"Driver":"host","ID":"aaaa","Labels":"","Name":"host"}'
+].join("\n")
+
+check("images carry their tag, size and whether anything uses them", () => {
+  const images = parseImages(IMAGES_FIXTURE)
+  assert.strictEqual(images[0].name, "web-shop-api:latest")
+  assert.ok(Math.abs(images[0].size - 764e6) < 1e6)
+  assert.strictEqual(images[0].inUse, true)
+
+  assert.strictEqual(images[1].name, "<none>", "an untagged image is not called <none>:<none>")
+  assert.strictEqual(images[1].inUse, false)
+})
+
+check("anonymous volumes are grouped by the stack that made them", () => {
+  // 64 hex characters of nothing; the project label is the only way to tell
+  // one from another.
+  const volumes = parseVolumes(VOLUMES_FIXTURE)
+  assert.strictEqual(volumes[0].anonymous, true)
+  assert.strictEqual(volumes[0].group, "(loose)")
+  assert.strictEqual(volumes[1].group, "web-shop")
+  assert.strictEqual(volumes[1].anonymous, false)
+})
+
+check("the engine's own networks are listed and never removable", () => {
+  const networks = parseNetworks(NETWORKS_FIXTURE)
+  const byName = {}
+  for (const network of networks) byName[network.name] = network
+
+  assert.strictEqual(byName["web-shop_default"].protected, false)
+  assert.ok(canRemoveResource(byName["web-shop_default"]))
+
+  for (const name of ["bridge", "host"]) {
+    assert.strictEqual(byName[name].protected, true, name)
+    assert.strictEqual(canRemoveResource(byName[name]), false, name)
+  }
+})
+
+check("each resource kind knows how it is removed", () => {
+  assert.deepStrictEqual(
+    resourceRemoveCommand({ kind: "image", id: "abc" }), ["docker", "rmi", "abc"])
+  assert.deepStrictEqual(
+    resourceRemoveCommand({ kind: "volume", name: "data" }), ["docker", "volume", "rm", "data"])
+  assert.deepStrictEqual(
+    resourceRemoveCommand({ kind: "network", id: "net" }), ["docker", "network", "rm", "net"])
+  assert.deepStrictEqual(resourceRemoveCommand({ kind: "mystery" }), [])
+})
+
+check("no removal ever forces", () => {
+  // If the engine refuses because something is still using it, that refusal is
+  // information, not an obstacle.
+  for (const kind of ["image", "volume", "network"]) {
+    const command = resourceRemoveCommand({ kind: kind, id: "x", name: "x" })
+    assert.ok(!command.includes("-f"), kind)
+    assert.ok(!command.includes("--force"), kind)
+  }
+})
+
+check("bulk removal asks once, with the count and the size", () => {
+  // A dialog that appears eleven times is a dialog nobody reads.
+  const one = resourceConfirmMessage([{ kind: "image", name: "api:latest", size: 1e9 }])
+  assert.ok(one.indexOf("api:latest") > 0)
+
+  const many = resourceConfirmMessage([
+    { kind: "image", name: "a", size: 1e9 },
+    { kind: "image", name: "b", size: 2e9 }
+  ])
+  assert.ok(many.indexOf("2 items") > 0)
+  assert.ok(many.indexOf("3GB") > 0)
+})
+
+// --------------------------------------------------------------- gauges
+
+check("every gauge shows its denominator", () => {
+  // A percentage with no denominator is a number nobody can act on.
+  const aggregate = { samples: 3, cpu: 15, memUsed: 3.2e9, memLimit: 31e9 }
+  const df = parseSystemDf(DF_FIXTURE)
+  const g = gauges(aggregate, df, { used: 300e9, total: 510e9 })
+
+  assert.strictEqual(g.cpu.text, "15%")
+  assert.strictEqual(g.memory.text, "3.2GB/31GB")
+  assert.ok(g.disk.text.indexOf("/510GB") > 0, "the engine against the filesystem")
+})
+
+check("the disk gauge measures the engine against the disk, not against itself", () => {
+  const df = parseSystemDf(DF_FIXTURE)
+  const g = gauges({ samples: 1, cpu: 0, memUsed: 0, memLimit: 1 }, df, { used: 0, total: 510e9 })
+
+  assert.ok(g.disk.value > 0)
+  assert.strictEqual(g.disk.max, 510e9)
+  assert.ok(g.disk.value < g.disk.max, "otherwise it would always read as full")
+})
+
+check("gauges with no sample say so instead of showing zero", () => {
+  const g = gauges({ samples: 0, cpu: 0, memUsed: 0, memLimit: 0 }, [], { used: 0, total: 0 })
+  assert.strictEqual(g.cpu.text, "—")
+  assert.strictEqual(g.memory.text, "—")
+  assert.strictEqual(g.disk.text, "—")
+})
+
+check("host disk parses the df output it asks for", () => {
+  const out = "     USED      SIZE\n307793186816 509943480320\n"
+  assert.deepStrictEqual(parseHostDisk(out), { used: 307793186816, total: 509943480320 })
+  assert.deepStrictEqual(parseHostDisk(""), { used: 0, total: 0 })
+  assert.deepStrictEqual(hostDiskCommand(), ["df", "-B1", "--output=used,size", "/"])
+})
+
+// -------------------------------------------------------- daemon control
+
+check("the daemon is driven as the user, never as root", () => {
+  // systemctl authenticates through the ordinary polkit prompt. No sudo, no
+  // pkexec, nothing setuid.
+  for (const action of ["start", "stop", "enable", "disable"]) {
+    const command = daemonCommand(action)
+    assert.strictEqual(command[0], "systemctl", action)
+    assert.ok(!command.includes("sudo") && !command.includes("pkexec"), action)
+  }
+  assert.deepStrictEqual(daemonCommand("nonsense"), [])
+})
+
+check("stopping the daemon takes the socket with it", () => {
+  // Leaving docker.socket up means the next command silently starts it again.
+  assert.ok(daemonCommand("stop").includes("docker.socket"))
+  assert.ok(!daemonCommand("start").includes("docker.socket"))
+})
+
 console.log(passed + " checks passed")

@@ -39,7 +39,9 @@
       "stackGap": 3,
       "groupStacks": true,
       "maxWidth": 160,
-      "notifications": true
+      "notifications": true,
+      "engine": "auto",
+      "view": "all"
     },
     "schema": [
       {
@@ -52,6 +54,18 @@
           "lazydocker"
         ],
         "defaultValue": "popup"
+      },
+      {
+        "key": "engine",
+        "type": "string",
+        "label": "Container engine",
+        "description": "auto prefers docker when both are installed.",
+        "options": [
+          "auto",
+          "docker",
+          "podman"
+        ],
+        "defaultValue": "auto"
       },
       {
         "key": "groupBy",
