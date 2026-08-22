@@ -5,6 +5,12 @@ changing anything here.
 
 ## Development loop
 
+**After changing the plugin id, restart the shell before believing anything.**
+The running shell keeps the plugin it loaded at startup under its old id: the
+symlink and the bar entry move, and the widget on screen is still the previous
+one. Buttons appear dead for reasons that are not in the code.
+
+
 The plugin is installed as a symlink:
 
 ```
