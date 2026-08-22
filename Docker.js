@@ -1598,6 +1598,95 @@ function askAgentCommand(scriptPath, container, tail) {
   return [scriptPath, container.id, container.name, String(Number(tail) || 400)]
 }
 
+// A failing stack is usually a failing relationship — the api cannot reach the
+// database — and one container's log is half of that conversation.
+function askAgentStackCommand(scriptPath, group, tail) {
+  if (!scriptPath || !group || !group.project || group.loose) return []
+  return [scriptPath, group.project, String(Number(tail) || 200)]
+}
+
+// The stack knows where its compose file is; opening it closes the loop after
+// the agent says which line is wrong.
+function composeFileFor(group) {
+  if (!group) return ""
+  var files = group.configFiles || []
+  return files.length > 0 ? files[0] : ""
+}
+
+function openComposeCommand(group) {
+  var file = composeFileFor(group)
+  if (!file) return []
+  return ["omarchy-launch-editor", file]
+}
+
+// ------------------------------------------------------- restart loops
+//
+// `docker ps` carries no restart count; `inspect` does. Asked only for the
+// containers currently restarting — usually none, occasionally one — because
+// inspecting everything on every refresh is the cost this plugin avoids
+// everywhere else.
+function restartingIds(containers) {
+  var ids = []
+  for (var i = 0; i < containers.length; i++) {
+    if (containers[i].state === "restarting") ids.push(containers[i].id)
+  }
+  return ids
+}
+
+function inspectRestartsCommand(ids) {
+  if (!ids || ids.length === 0) return []
+  return [ENGINE, "inspect", "--format", "{{.Id}} {{.RestartCount}}"].concat(ids)
+}
+
+function parseRestarts(stdout) {
+  var byId = {}
+  var lines = String(stdout || "").trim().split("\n")
+
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].trim().split(/\s+/)
+    if (parts.length < 2) continue
+    var count = Number(parts[1])
+    if (isFinite(count)) byId[parts[0]] = count
+  }
+
+  return byId
+}
+
+// "Restarting" and "restarted 8846 times" are different problems, and the
+// second is invisible without this.
+function restartText(count) {
+  if (!isFinite(count) || count <= 0) return ""
+  if (count === 1) return "1 restart"
+  return count + " restarts"
+}
+
+// --------------------------------------------------------- disk pressure
+//
+// 226GB of reclaimable build cache is not an emergency until the disk is nearly
+// full, and then it very much is. Neither number means much alone.
+function diskPressure(dfRows, hostDisk, options) {
+  var settings = options || {}
+  var fullAt = Number(settings.fullAt) || 0.9
+  var reclaimAt = Number(settings.reclaimAt) || 20e9
+
+  var used = hostDisk && hostDisk.total > 0 ? hostDisk.used / hostDisk.total : 0
+  var reclaimable = totalReclaimable(dfRows)
+
+  if (used >= fullAt && reclaimable > 0) {
+    return {
+      level: "urgent",
+      text: "disco em " + Math.round(used * 100) + "% — "
+        + formatBytes(reclaimable) + " recuperáveis"
+    }
+  }
+
+  if (reclaimable >= reclaimAt) {
+    return { level: "notice", text: formatBytes(reclaimable) + " recuperáveis" }
+  }
+
+  return { level: "none", text: reclaimable > 0 ? formatBytes(reclaimable) : "" }
+}
+
 function focusMonitorCommand(monitor) {
   if (!monitor) return []
   return ["hyprctl", "dispatch", "focusmonitor", String(monitor)]

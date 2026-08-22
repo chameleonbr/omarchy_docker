@@ -1566,4 +1566,85 @@ check("every container in the fixture gets a word and a detail", () => {
   }
 })
 
+
+// -------------------------------------------------- stack agent handoff
+
+check("a stack handoff names the stack, not its containers", () => {
+  const group = { project: "web-shop", loose: false }
+  assert.deepStrictEqual(
+    askAgentStackCommand("/plugin/bin/ask-stack", group, 200),
+    ["/plugin/bin/ask-stack", "web-shop", "200"])
+})
+
+check("containers outside compose have no stack to hand over", () => {
+  assert.deepStrictEqual(
+    askAgentStackCommand("/x", { project: "(loose)", loose: true }, 200), [])
+  assert.deepStrictEqual(askAgentStackCommand("/x", null, 200), [])
+  assert.deepStrictEqual(askAgentStackCommand("", { project: "a", loose: false }, 200), [])
+})
+
+check("the compose file opens in the editor when the stack knows where it is", () => {
+  const group = { configFiles: ["/srv/web-shop/compose.yml"] }
+  assert.deepStrictEqual(
+    openComposeCommand(group), ["omarchy-launch-editor", "/srv/web-shop/compose.yml"])
+  assert.deepStrictEqual(openComposeCommand({ configFiles: [] }), [])
+  assert.deepStrictEqual(openComposeCommand(null), [])
+})
+
+// ---------------------------------------------------------- restart loops
+
+check("only restarting containers are inspected", () => {
+  // Inspecting everything on every refresh is the cost this plugin avoids
+  // everywhere else.
+  const containers = parsePs(psFixture)
+  const ids = restartingIds(containers)
+
+  assert.strictEqual(ids.length, 1, "the fixture has exactly one")
+  assert.deepStrictEqual(inspectRestartsCommand([]), [], "nothing restarting, no call")
+
+  const command = inspectRestartsCommand(ids)
+  assert.strictEqual(command[0], "docker")
+  assert.ok(command.includes("--format"))
+  assert.ok(command.includes(ids[0]))
+})
+
+check("restart counts parse, and nonsense does not", () => {
+  assert.deepStrictEqual(parseRestarts("abc 8846\ndef 0"), { abc: 8846, def: 0 })
+  assert.deepStrictEqual(parseRestarts(""), {})
+  assert.deepStrictEqual(parseRestarts("garbage"), {})
+})
+
+check("one restart and a loop read differently", () => {
+  // "Restarting" and "restarted 8846 times" are different problems.
+  assert.strictEqual(restartText(0), "", "no count, nothing to say")
+  assert.strictEqual(restartText(1), "1 restart")
+  assert.strictEqual(restartText(8846), "8846 restarts")
+  assert.strictEqual(restartText(NaN), "")
+})
+
+// --------------------------------------------------------- disk pressure
+
+check("a big cache is only urgent when the disk is nearly full", () => {
+  // 226GB of reclaimable build cache is not an emergency until it is.
+  const df = parseSystemDf(DF_FIXTURE)
+
+  const roomy = diskPressure(df, { used: 100e9, total: 1000e9 })
+  assert.strictEqual(roomy.level, "notice", "worth mentioning, not shouting")
+
+  const full = diskPressure(df, { used: 950e9, total: 1000e9 })
+  assert.strictEqual(full.level, "urgent")
+  assert.ok(full.text.indexOf("95%") > 0, "and it says how full")
+})
+
+check("nothing to reclaim raises nothing, however full the disk", () => {
+  const pressure = diskPressure([], { used: 990e9, total: 1000e9 })
+  assert.strictEqual(pressure.level, "none")
+  assert.strictEqual(pressure.text, "")
+})
+
+check("a small amount of reclaimable space stays quiet", () => {
+  const df = parseSystemDf('{"Type":"Build Cache","Reclaimable":"200MB","Size":"1GB","TotalCount":"1","Active":"0"}')
+  assert.strictEqual(diskPressure(df, { used: 100e9, total: 1000e9 }).level, "none")
+})
+
 console.log(passed + " checks passed")

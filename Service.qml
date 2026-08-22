@@ -155,6 +155,7 @@ Item {
     var next = Docker.parsePs(text)
     root.announceChanges(next)
     root.containers = next
+    root.sampleRestarts()
   }
 
   function describeFailure(exitCode) {
@@ -558,6 +559,7 @@ Item {
   }
 
   readonly property string askAgentScript: scriptPath("bin/omarchy-docker-ask-agent")
+  readonly property string askAgentStackScript: scriptPath("bin/omarchy-docker-ask-agent-stack")
 
   function scriptPath(relative) {
     return decodeURIComponent(
@@ -569,6 +571,16 @@ Item {
   function askAgent(container, monitor) {
     focusMonitor(monitor)
     launch(Docker.askAgentCommand(root.askAgentScript, container, root.logTail))
+  }
+
+  function askAgentStack(group, monitor) {
+    focusMonitor(monitor)
+    launch(Docker.askAgentStackCommand(root.askAgentStackScript, group, root.logTail))
+  }
+
+  function openCompose(group, monitor) {
+    focusMonitor(monitor)
+    launch(Docker.openComposeCommand(group))
   }
 
   function openContainerView(kind, container, monitor) {
@@ -646,6 +658,44 @@ Item {
   }
 
   readonly property var gauges: Docker.gauges(aggregate, dfRows, hostDisk)
+
+  // -------------------------------------------------------- restart loops
+  //
+  // `docker ps` carries no restart count. Inspect is asked only about the
+  // containers currently restarting — usually none — because inspecting
+  // everything on every refresh is the cost avoided everywhere else here.
+
+  property var restartCounts: ({})
+
+  Process {
+    id: restartProcess
+
+    stdout: StdioCollector {
+      id: restartStdout
+      waitForEnd: true
+      onStreamFinished: root.restartCounts = Docker.parseRestarts(restartStdout.text)
+    }
+  }
+
+  function sampleRestarts() {
+    if (restartProcess.running) return
+    var command = Docker.inspectRestartsCommand(Docker.restartingIds(containers))
+    if (command.length === 0) {
+      if (Object.keys(restartCounts).length > 0) restartCounts = ({})
+      return
+    }
+    restartProcess.command = command
+    restartProcess.running = true
+  }
+
+  function restartsFor(id) {
+    var count = restartCounts[id]
+    return count === undefined ? -1 : count
+  }
+
+  // --------------------------------------------------------- disk pressure
+
+  readonly property var pressure: Docker.diskPressure(dfRows, hostDisk, {})
 
   // ------------------------------------------------------- port conflicts
 

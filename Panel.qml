@@ -1227,6 +1227,30 @@ Panel {
                     }
 
                     PanelActionButton {
+                      iconText: "󰚩"
+                      // A failing stack is usually a failing relationship, and
+                      // one container's log is half of that conversation.
+                      tooltipText: "Analisar o stack inteiro com o agente"
+                      foreground: root.dim
+                      hoverColor: root.foreground
+                      visible: !stackBlock.modelData.loose
+                      onClicked: if (root.service)
+                        root.service.askAgentStack(stackBlock.modelData, root.monitorName)
+                    }
+
+                    PanelActionButton {
+                      iconText: "󰈔"
+                      tooltipText: Docker.composeFileFor(stackBlock.modelData)
+                        ? "Abrir o compose no editor"
+                        : "Sem compose conhecido"
+                      foreground: root.dim
+                      hoverColor: root.foreground
+                      visible: Docker.composeFileFor(stackBlock.modelData) !== ""
+                      onClicked: if (root.service)
+                        root.service.openCompose(stackBlock.modelData, root.monitorName)
+                    }
+
+                    PanelActionButton {
                       iconText: "󰡨"
                       tooltipText: Docker.canScopeLazydocker(stackBlock.modelData)
                         ? "lazydocker neste stack"
@@ -1384,7 +1408,14 @@ Panel {
 
                     Text {
                       anchors.verticalCenter: parent.verticalCenter
-                      text: Docker.stateDetail(row.modelData)
+                      // "Restarting" and "restarted 8846 times" are different
+                      // problems; the second is invisible without asking.
+                      text: {
+                        var detail = Docker.stateDetail(row.modelData)
+                        var count = root.service ? root.service.restartsFor(row.modelData.id) : -1
+                        var restarts = Docker.restartText(count)
+                        return restarts ? restarts + " · " + detail : detail
+                      }
                       textFormat: Text.PlainText
                       color: root.dim
                       font.family: root.fontFamily
@@ -1583,8 +1614,13 @@ Panel {
 
           Text {
             anchors.verticalCenter: parent.verticalCenter
-            text: root.service ? Docker.formatBytes(root.service.reclaimable) : ""
-            color: root.foreground
+            // A big cache is not an emergency until the disk is nearly full,
+            // and then it very much is.
+            text: root.service ? root.service.pressure.text : ""
+            color: root.service && root.service.pressure.level === "urgent"
+              ? root.badColor
+              : (root.service && root.service.pressure.level === "notice"
+                ? root.foreground : root.dim)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             width: parent.width - Style.space(180)

@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# Hand a whole compose stack to the default Omarchy coding agent.
+#
+#   omarchy-docker-ask-agent-stack <project> [tail]
+#
+# A failing stack is usually a failing relationship — the api cannot reach the
+# database, the worker cannot reach the queue — and one container's log is half
+# of that conversation. This collects every container's log, the compose file
+# that defines them, and the state of each, and hands the lot over.
+
+set -euo pipefail
+
+# Logs routinely carry connection strings and tokens.
+umask 077
+
+project=${1:?usage: omarchy-docker-ask-agent-stack <project> [tail]}
+tail_lines=${2:-200}
+
+fail() {
+  notify-send -u critical "Docker" "$1" 2>/dev/null || true
+  echo "$1" >&2
+  exit 1
+}
+
+agent=$(omarchy-default-agent)
+[[ -n $agent ]] || fail "Nenhum agente padrão definido. Escolha um com: omarchy default agent <nome>"
+command -v docker >/dev/null 2>&1 || fail "docker não encontrado"
+
+filter="label=com.docker.compose.project=$project"
+mapfile -t ids < <(docker ps -aq --filter "$filter")
+((${#ids[@]})) || fail "Nenhum container no stack $project"
+
+log_dir="${XDG_RUNTIME_DIR:-/tmp}/omarchy-docker"
+mkdir -p -m 700 "$log_dir" 2>/dev/null || true
+[[ -d $log_dir && ! -L $log_dir && -O $log_dir ]] ||
+  fail "Não vou escrever em $log_dir: não é um diretório meu"
+
+bundle="$log_dir/${project//[^a-zA-Z0-9_-]/_}.stack.log"
+[[ -L $bundle ]] && rm -f "$bundle"
+: >"$bundle"
+
+workdir=""
+compose_files=""
+summary=""
+
+for id in "${ids[@]}"; do
+  read -r name state code restarts health < <(
+    docker inspect --format \
+      '{{.Name}} {{.State.Status}} {{.State.ExitCode}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+      "$id")
+  name=${name#/}
+
+  if [[ -z $workdir ]]; then
+    workdir=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$id" 2>/dev/null || true)
+    compose_files=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$id" 2>/dev/null || true)
+  fi
+
+  # The restart count is frequently the whole story and appears nowhere in the
+  # log itself.
+  summary+="  $name — $state, exit $code, $restarts restarts, health $health"$'\n'
+
+  {
+    echo "===== $name ($state, exit $code, $restarts restarts, health $health) ====="
+    # Both streams: container errors overwhelmingly arrive on stderr, and
+    # splitting them here hides the interesting half.
+    docker logs --tail "$tail_lines" --timestamps "$id" 2>&1 || echo "(sem log)"
+    echo
+  } >>"$bundle"
+done
+
+lines=$(wc -l <"$bundle")
+[[ -n $workdir && -d $workdir ]] && cd "$workdir"
+
+prompt=$(
+  cat <<PROMPT
+O stack "$project" desta máquina está com problema e quero saber por quê.
+
+Estado de cada container:
+
+$summary
+Os logs de todos eles, na ordem acima, estão reunidos em um arquivo só
+($lines linhas), separados por cabeçalhos "===== nome =====":
+
+  $bundle
+${compose_files:+
+O compose que define o stack está em:
+
+  ${compose_files//,/
+  }
+}${workdir:+
+O diretório do projeto é $workdir, e é onde esta sessão começou.
+}
+Leia o arquivo de logs primeiro. Um stack que falha costuma ser uma relação que
+falha — um serviço não alcançando outro — então compare os logs entre si e olhe
+a ordem dos horários, não só cada log isolado. Diga qual é a causa raiz, qual
+serviço é a origem e o que corrigir.
+
+Se o log não bastar para concluir, diga o que falta e qual comando roda para
+obter.
+
+Não reinicie nem altere nada sem me perguntar antes.
+PROMPT
+)
+
+exec omarchy-agent --prompt "$prompt"
