@@ -10,7 +10,16 @@
 const assert = require("assert")
 const fs = require("fs")
 
-eval(fs.readFileSync(__dirname + "/Docker.js", "utf8"))
+// `.pragma library` is a QML directive, not JavaScript, so it is stripped
+// before eval. It has to be in the files: without it each importing QML file
+// gets its own copy of the module.
+function load(name) {
+  return fs.readFileSync(__dirname + "/" + name, "utf8")
+    .replace(/^\.pragma .*$/gm, "")
+}
+
+eval(load("Docker.js"))
+eval(load("I18n.js"))
 
 const psFixture = fs.readFileSync(__dirname + "/fixtures/ps.jsonl", "utf8")
 const statsFixture = fs.readFileSync(__dirname + "/fixtures/stats.jsonl", "utf8")
@@ -980,19 +989,6 @@ check("the total counts only what a button can actually reclaim", () => {
   assert.ok(total < 226e9 + volumes, "volumes are not promised")
 })
 
-check("the confirmation names the thing and the size", () => {
-  const target = pruneTargets(parseSystemDf(DF_FIXTURE)).find(t => t.id === "buildCache")
-  const message = pruneConfirmMessage(target)
-
-  assert.ok(message.indexOf("build cache") > 0)
-  assert.ok(message.indexOf("221GB") > 0, "the number is the reason to click")
-
-  const unknown = pruneConfirmMessage({ label: "dangling images", reclaimable: -1, detail: "x" })
-  assert.ok(unknown.indexOf("(") < 0, "no size invented when it is not known")
-})
-
-// -------------------------------------------------------- state changes
-
 function containersWith(overrides) {
   return parsePs(psFixture).map(container =>
     overrides[container.name]
@@ -1259,21 +1255,6 @@ check("no removal ever forces", () => {
   }
 })
 
-check("bulk removal asks once, with the count and the size", () => {
-  // A dialog that appears eleven times is a dialog nobody reads.
-  const one = resourceConfirmMessage([{ kind: "image", name: "api:latest", size: 1e9 }])
-  assert.ok(one.indexOf("api:latest") > 0)
-
-  const many = resourceConfirmMessage([
-    { kind: "image", name: "a", size: 1e9 },
-    { kind: "image", name: "b", size: 2e9 }
-  ])
-  assert.ok(many.indexOf("2 items") > 0)
-  assert.ok(many.indexOf("3GB") > 0)
-})
-
-// --------------------------------------------------------------- gauges
-
 check("every gauge shows its denominator", () => {
   // A percentage with no denominator is a number nobody can act on.
   const aggregate = { samples: 3, cpu: 15, memUsed: 3.2e9, memLimit: 31e9 }
@@ -1493,82 +1474,6 @@ check("attaching does not mutate the images it was given", () => {
 
 // ------------------------------------------------------- state in words
 
-check("every state a container can be in has a sentence", () => {
-  // A reader who has to ask what the gold marking means has been told nothing,
-  // however consistent the palette.
-  for (const container of parsePs(psFixture)) {
-    const text = stateText(container)
-    assert.ok(text.length > 0, container.name)
-    assert.notStrictEqual(text, container.state, container.name + " says more than the raw state")
-  }
-})
-
-check("the sentence separates the states a colour cannot", () => {
-  // These three are all "not healthy" and all wear the same colour family.
-  const unhealthy = stateText({ state: "running", health: "unhealthy" })
-  const looping = stateText({ state: "restarting" })
-  const crashed = stateText({ state: "exited", status: "Exited (255) 3 weeks ago" })
-
-  assert.ok(unhealthy !== looping && looping !== crashed && unhealthy !== crashed)
-  assert.ok(crashed.indexOf("255") > 0, "and it carries the exit code")
-})
-
-check("a clean stop does not read as a failure", () => {
-  assert.ok(stateText({ state: "exited", status: "Exited (0) 5 weeks ago" }).indexOf("sem erro") > 0)
-})
-
-
-// -------------------------------------------------- the word on the row
-
-check("the row classifies instead of repeating docker", () => {
-  // "Exited (143) About an hour ago" makes the reader decide whether 143 is bad
-  // news. The row says which of the four states it is.
-  assert.strictEqual(stateLabel({ state: "exited", status: "Exited (143) 5 weeks ago" }), "falhou")
-  assert.strictEqual(stateLabel({ state: "exited", status: "Exited (0) 5 weeks ago" }), "parado")
-  assert.strictEqual(stateLabel({ state: "running", health: "none" }), "rodando")
-  assert.strictEqual(stateLabel({ state: "running", health: "unhealthy" }), "unhealthy")
-  assert.strictEqual(stateLabel({ state: "running", health: "starting" }), "subindo")
-  assert.strictEqual(stateLabel({ state: "restarting" }), "reiniciando")
-  assert.strictEqual(stateLabel({ state: "paused" }), "pausado")
-  assert.strictEqual(stateLabel({ state: "created" }), "criado")
-  assert.strictEqual(stateLabel({ state: "dead" }), "morto")
-})
-
-check("a clean stop and a failure are different words, not shades", () => {
-  const clean = stateLabel({ state: "exited", status: "Exited (0) 1 hour ago" })
-  const failed = stateLabel({ state: "exited", status: "Exited (1) 1 hour ago" })
-  assert.notStrictEqual(clean, failed)
-})
-
-check("the detail keeps the exit code and drops the scaffolding", () => {
-  assert.strictEqual(
-    stateDetail({ state: "exited", status: "Exited (143) About an hour ago" }),
-    "código 143 · an hour")
-  assert.strictEqual(
-    stateDetail({ state: "exited", status: "Exited (0) 5 weeks ago" }), "5 weeks")
-  assert.strictEqual(
-    stateDetail({ state: "running", status: "Up 6 days (healthy)" }), "6 days")
-  assert.strictEqual(
-    stateDetail({ state: "restarting", status: "Restarting (1) 39 seconds ago" }), "39 seconds")
-})
-
-check("an unfamiliar status is passed through rather than swallowed", () => {
-  // Better to show something docker said than to show nothing.
-  assert.strictEqual(relativeAge("something new"), "something new")
-  assert.strictEqual(relativeAge(""), "")
-})
-
-check("every container in the fixture gets a word and a detail", () => {
-  for (const container of parsePs(psFixture)) {
-    assert.ok(stateLabel(container).length > 0, container.name)
-    assert.ok(stateDetail(container).length > 0, container.name)
-    assert.ok(stateLabel(container).length <= 12, container.name + " stays short")
-  }
-})
-
-
-// -------------------------------------------------- stack agent handoff
-
 check("a stack handoff names the stack, not its containers", () => {
   const group = { project: "web-shop", loose: false }
   assert.deepStrictEqual(
@@ -1614,16 +1519,6 @@ check("restart counts parse, and nonsense does not", () => {
   assert.deepStrictEqual(parseRestarts("garbage"), {})
 })
 
-check("one restart and a loop read differently", () => {
-  // "Restarting" and "restarted 8846 times" are different problems.
-  assert.strictEqual(restartText(0), "", "no count, nothing to say")
-  assert.strictEqual(restartText(1), "1 restart")
-  assert.strictEqual(restartText(8846), "8846 restarts")
-  assert.strictEqual(restartText(NaN), "")
-})
-
-// --------------------------------------------------------- disk pressure
-
 check("a big cache is only urgent when the disk is nearly full", () => {
   // 226GB of reclaimable build cache is not an emergency until it is.
   const df = parseSystemDf(DF_FIXTURE)
@@ -1633,18 +1528,187 @@ check("a big cache is only urgent when the disk is nearly full", () => {
 
   const full = diskPressure(df, { used: 950e9, total: 1000e9 })
   assert.strictEqual(full.level, "urgent")
-  assert.ok(full.text.indexOf("95%") > 0, "and it says how full")
+  assert.strictEqual(full.percent, 95, "and it carries how full")
 })
 
 check("nothing to reclaim raises nothing, however full the disk", () => {
   const pressure = diskPressure([], { used: 990e9, total: 1000e9 })
   assert.strictEqual(pressure.level, "none")
-  assert.strictEqual(pressure.text, "")
+  assert.strictEqual(pressure.bytes, 0)
 })
 
 check("a small amount of reclaimable space stays quiet", () => {
   const df = parseSystemDf('{"Type":"Build Cache","Reclaimable":"200MB","Size":"1GB","TotalCount":"1","Active":"0"}')
   assert.strictEqual(diskPressure(df, { used: 100e9, total: 1000e9 }).level, "none")
+})
+
+
+// ------------------------------------------------------------ language
+
+check("English is the default and the fallback", () => {
+  // A panel reading "state.failed" is worse than one reading it in the wrong
+  // language.
+  setLanguage("pt")
+  assert.strictEqual(t("state.failed"), "falhou")
+
+  const missing = "key.that.is.not.translated"
+  STRINGS.en[missing] = "only in English"
+  assert.strictEqual(t(missing), "only in English", "falls back rather than showing the key")
+  delete STRINGS.en[missing]
+
+  assert.strictEqual(t("no.such.key"), "no.such.key", "and an unknown key is visible, not blank")
+  setLanguage("en")
+})
+
+check("an unknown language is English, not a crash", () => {
+  assert.strictEqual(setLanguage("klingon"), "en")
+  assert.strictEqual(setLanguage(""), "en")
+})
+
+check("auto follows the environment and never guesses a neighbour", () => {
+  assert.strictEqual(detectLanguage("pt_BR.UTF-8"), "pt")
+  assert.strictEqual(detectLanguage("pt"), "pt")
+  assert.strictEqual(detectLanguage("es_ES.UTF-8"), "en", "Spanish is not near enough to Portuguese")
+  assert.strictEqual(detectLanguage(""), "en")
+})
+
+check("both tables carry the same keys", () => {
+  // A key present in one and missing in the other is a string that silently
+  // changes language mid-panel.
+  const en = Object.keys(STRINGS.en).sort()
+  const pt = Object.keys(STRINGS.pt).sort()
+  assert.deepStrictEqual(pt, en)
+})
+
+check("no translated string is empty", () => {
+  for (const lang of ["en", "pt"]) {
+    for (const key of Object.keys(STRINGS[lang])) {
+      assert.ok(String(STRINGS[lang][key]).length > 0, lang + " " + key)
+    }
+  }
+})
+
+check("every placeholder in English exists in Portuguese", () => {
+  // Otherwise a number quietly disappears from one translation.
+  const holders = text => (String(text).match(/\{(\w+)\}/g) || []).sort()
+
+  for (const key of Object.keys(STRINGS.en)) {
+    assert.deepStrictEqual(holders(STRINGS.pt[key]), holders(STRINGS.en[key]), key)
+  }
+})
+
+check("every state key has a word and a sentence in both languages", () => {
+  const states = ["running", "unhealthy", "starting", "restarting", "paused",
+    "removing", "dead", "created", "stopped", "failed"]
+
+  for (const lang of ["en", "pt"]) {
+    for (const state of states) {
+      assert.ok(STRINGS[lang]["state." + state], lang + " state." + state)
+      assert.ok(STRINGS[lang]["state.long." + state], lang + " state.long." + state)
+    }
+  }
+})
+
+check("the panel asks for a key the table has", () => {
+  // Every container in the fixture must land on a translated state.
+  setLanguage("pt")
+  for (const container of parsePs(psFixture)) {
+    const key = stateKey(container)
+    assert.ok(STRINGS.pt["state." + key], container.name + " -> " + key)
+    assert.notStrictEqual(t("state." + key), "state." + key)
+  }
+  setLanguage("en")
+})
+
+// ------------------------------------------------------------- duration
+
+check("a duration is a count and a unit, never words to swap", () => {
+  // Translating "About an hour" word by word produced "cerca de an hora".
+  assert.deepStrictEqual(parseAge("Up 6 days (healthy)"),
+    { count: 6, unit: "day", approx: false, raw: "6 days" })
+  assert.deepStrictEqual(parseAge("Exited (143) About an hour ago"),
+    { count: 1, unit: "hour", approx: true, raw: "an hour" })
+  assert.deepStrictEqual(parseAge("Restarting (1) 39 seconds ago"),
+    { count: 39, unit: "second", approx: false, raw: "39 seconds" })
+})
+
+check("the article never reaches the table", () => {
+  setLanguage("pt")
+  assert.strictEqual(formatAge(parseAge("Exited (1) About an hour ago")), "cerca de 1 hora")
+  assert.strictEqual(formatAge(parseAge("Up 6 days")), "6 dias")
+  assert.strictEqual(formatAge(parseAge("Up 1 day")), "1 dia", "singular")
+  setLanguage("en")
+  assert.strictEqual(formatAge(parseAge("Exited (1) About an hour ago")), "about 1 hour")
+  assert.strictEqual(formatAge(parseAge("Up 1 day")), "1 day")
+})
+
+check("a duration docker spells some other way is passed through", () => {
+  // Better to show what docker said than to show nothing.
+  const odd = parseAge("Up something odd")
+  assert.strictEqual(odd.unit, undefined)
+  assert.strictEqual(formatAge(odd), "something odd")
+  assert.strictEqual(formatAge(parseAge("")), "")
+})
+
+check("less than a second has no count of its own", () => {
+  const parsed = parseAge("Up Less than a second")
+  assert.strictEqual(parsed.unit, "second")
+  assert.strictEqual(parsed.count, 1)
+})
+
+// --------------------------------------------------- assembled sentences
+
+check("confirmations are templates, never concatenated fragments", () => {
+  // Word order is not universal and a table of fragments cannot express that.
+  const target = pruneTargets(parseSystemDf(DF_FIXTURE)).find(t => t.id === "buildCache")
+
+  for (const lang of ["en", "pt"]) {
+    setLanguage(lang)
+    const message = pruneConfirm(target, formatBytes)
+    assert.ok(message.indexOf("221GB") > 0, lang + " keeps the number")
+    assert.ok(message.indexOf(t(target.labelKey)) > 0, lang + " names the thing")
+  }
+  setLanguage("en")
+})
+
+check("a confirmation invents no size it does not know", () => {
+  const dangling = pruneTargets(parseSystemDf(DF_FIXTURE)).find(t => t.id === "danglingImages")
+  assert.ok(pruneConfirm(dangling, formatBytes).indexOf("(") < 0)
+})
+
+check("bulk removal asks once, naming the count and the size", () => {
+  const facts = resourceConfirmFacts([
+    { kind: "image", name: "a", size: 1e9 },
+    { kind: "image", name: "b", size: 2e9 }
+  ])
+  assert.strictEqual(facts.count, 2)
+  assert.strictEqual(facts.bytes, 3e9)
+
+  const message = removeResourceConfirm(facts, formatBytes)
+  assert.ok(message.indexOf("2") > 0 && message.indexOf("3GB") > 0)
+
+  const one = resourceConfirmFacts([{ kind: "volume", name: "data", size: 0 }])
+  assert.ok(removeResourceConfirm(one, formatBytes).indexOf("data") > 0)
+})
+
+check("disk pressure is data here and a sentence there", () => {
+  const df = parseSystemDf(DF_FIXTURE)
+  const pressure = diskPressure(df, { used: 950e9, total: 1000e9 })
+
+  assert.strictEqual(pressure.percent, 95)
+  assert.ok(pressure.bytes > 0)
+
+  setLanguage("pt")
+  assert.ok(pressureText(pressure, formatBytes).indexOf("95%") > 0)
+  setLanguage("en")
+  assert.ok(pressureText(pressure, formatBytes).indexOf("95%") > 0)
+  assert.strictEqual(pressureText({ level: "none", bytes: 0 }, formatBytes), "")
+})
+
+check("a restart count reads as one or as many", () => {
+  setLanguage("en")
+  assert.strictEqual(plural("restarts.one", "restarts.many", 1), "1 restart")
+  assert.strictEqual(plural("restarts.one", "restarts.many", 8846), "8846 restarts")
 })
 
 console.log(passed + " checks passed")

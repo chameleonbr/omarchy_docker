@@ -18,6 +18,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Services.UPower
 import "Docker.js" as Docker
+import "I18n.js" as I18n
 
 Item {
   id: root
@@ -60,6 +61,8 @@ Item {
     statsOnBattery = settings.statsOnBattery === true
     notificationsEnabled = settings.notifications !== false
     logTail = Math.max(20, Number(settings.logTail || 200))
+
+    applyLanguage(String(settings.language || "auto"))
 
     var wanted = String(settings.engine || "auto")
     if (wanted !== enginePreference) {
@@ -159,10 +162,9 @@ Item {
   }
 
   function describeFailure(exitCode) {
-    // 126/127 are the shell's "cannot execute"; anything else from docker with
-    // no output is almost always the socket.
-    if (exitCode === 127) return "docker não encontrado"
-    return "sem acesso ao Docker — o usuário está no grupo 'docker'?"
+    // 126/127 are the shell's "cannot execute"; anything else from the engine
+    // with no output is almost always the socket.
+    return I18n.t(exitCode === 127 ? "daemon.missing" : "daemon.noAccess")
   }
 
   // ------------------------------------------------------ event stream
@@ -607,6 +609,23 @@ Item {
   // `auto` prefers docker when both are installed, because a machine with both
   // is nearly always a docker machine with podman along for the ride.
 
+  // ------------------------------------------------------------ language
+
+  property string languagePreference: "auto"
+  readonly property string locale: Quickshell.env("LC_ALL")
+    || Quickshell.env("LC_MESSAGES") || Quickshell.env("LANG") || ""
+  // Bumped whenever the language changes, so every binding that renders a
+  // string re-evaluates. I18n.t() is a function call, not a property, and QML
+  // has no way to know the table underneath it moved.
+  property int languageEpoch: 0
+
+  function applyLanguage(name) {
+    var wanted = name === "auto" ? I18n.detectLanguage(locale) : name
+    if (I18n.language() === wanted) return
+    I18n.setLanguage(wanted)
+    languageEpoch++
+  }
+
   property string enginePreference: "auto"
   readonly property string engineName: Docker.engine()
   readonly property string engineLabel: Docker.engineLabel()
@@ -764,6 +783,7 @@ Item {
   }
 
   Component.onCompleted: {
+    applyLanguage(languagePreference)
     refresh()
     eventsProcess.running = true
   }

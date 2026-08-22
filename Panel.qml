@@ -14,6 +14,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Docker.js" as Docker
+import "I18n.js" as I18n
 
 Panel {
   id: root
@@ -37,6 +38,49 @@ Panel {
   // monitor-aware behaviour silently turns into a no-op. That is exactly how it
   // shipped broken the first time — the code looked right and did nothing.
   readonly property var hostWindow: root.QsWindow ? root.QsWindow.window : null
+  // Every translated binding goes through these, and every one of them reads
+  // `languageEpoch` first. That read is the whole point: root.tr() is a function
+  // call, so QML records no dependency on it and a language change would
+  // repaint nothing. Declaring the property without reading it — which is how
+  // this shipped once — looks correct and does nothing.
+  readonly property int languageEpoch: service ? service.languageEpoch : 0
+
+  function tr(key, values) {
+    var epoch = root.languageEpoch
+    return I18n.t(key, values)
+  }
+
+  function trPlural(oneKey, manyKey, count) {
+    var epoch = root.languageEpoch
+    return I18n.plural(oneKey, manyKey, count)
+  }
+
+  function trAge(parsed) {
+    var epoch = root.languageEpoch
+    return I18n.formatAge(parsed)
+  }
+
+  function trPruneConfirm(target) {
+    var epoch = root.languageEpoch
+    return I18n.pruneConfirm(target, Docker.formatBytes)
+  }
+
+  function trRemoveContainer(name) {
+    var epoch = root.languageEpoch
+    return I18n.removeContainerConfirm(name)
+  }
+
+  function trRemoveResources(resources) {
+    var epoch = root.languageEpoch
+    return I18n.removeResourceConfirm(
+      Docker.resourceConfirmFacts(resources), Docker.formatBytes)
+  }
+
+  function trPressure(pressure) {
+    var epoch = root.languageEpoch
+    return I18n.pressureText(pressure, Docker.formatBytes)
+  }
+
   readonly property string monitorName: hostWindow && hostWindow.screen
     ? String(hostWindow.screen.name || "") : ""
 
@@ -544,10 +588,12 @@ Panel {
           // While a filter is on, the count says how much is hidden — a
           // filtered list must never look like a machine that lost containers.
           text: {
-            if (!root.daemonOk) return root.service ? root.service.errorText : "indisponível"
-            if (root.filtering) return root.visibleContainers.length + " de "
-              + root.summary.total + " containers"
-            return root.summary.running + "/" + root.summary.total + " containers"
+            if (!root.daemonOk) return root.service
+              ? root.service.errorText : root.tr("daemon.unavailable")
+            if (root.filtering) return root.tr("count.filtered",
+              { shown: root.visibleContainers.length, total: root.summary.total })
+            return root.tr("count.containers",
+              { running: root.summary.running, total: root.summary.total })
           }
           color: root.daemonOk ? root.dim : (root.badColor)
           font.family: root.fontFamily
@@ -564,17 +610,16 @@ Panel {
           PanelActionButton {
             iconText: root.daemonOk ? "󰓛" : "󰐊"
             tooltipText: root.daemonOk
-              ? "Parar o daemon (e o socket)"
-              : "Iniciar o daemon"
+              ? root.tr("tip.daemonStop")
+              : root.tr("tip.daemonStart")
             foreground: root.dim
             hoverColor: root.foreground
             onClicked: {
               if (!root.service) return
               if (!root.daemonOk) { root.service.runDaemon("start"); return }
               root.askConfirm(
-                "Parar o daemon do " + root.service.engineLabel + "?\n"
-                  + "Todo container em execução para junto.",
-                "Parar",
+                root.tr("daemon.stopConfirm", { engine: root.service.engineLabel }),
+                root.tr("action.stop"),
                 function() { root.service.runDaemon("stop") })
             }
           }
@@ -582,8 +627,8 @@ Panel {
           PanelActionButton {
             iconText: root.service && root.service.daemonAutostart === "enabled" ? "󰐥" : "󰤄"
             tooltipText: root.service && root.service.daemonAutostart === "enabled"
-              ? "Inicia junto com o sistema — clique para desligar"
-              : "Não inicia com o sistema — clique para ligar"
+              ? root.tr("tip.autostartOn")
+              : root.tr("tip.autostartOff")
             foreground: root.service && root.service.daemonAutostart === "enabled"
               ? Color.accent : root.dim
             hoverColor: root.foreground
@@ -593,7 +638,7 @@ Panel {
 
           PanelActionButton {
             iconText: "󰑓"
-            tooltipText: "Atualizar"
+            tooltipText: root.tr("tip.refresh")
             foreground: root.dim
             hoverColor: root.foreground
             onClicked: if (root.service) root.service.refresh()
@@ -601,7 +646,7 @@ Panel {
 
           PanelActionButton {
             iconText: "󰡨"
-            tooltipText: "Abrir lazydocker"
+            tooltipText: root.tr("tip.lazydocker")
             foreground: root.dim
             hoverColor: root.foreground
             onClicked: if (root.service) root.service.openLazydocker(null, root.monitorName)
@@ -659,10 +704,10 @@ Panel {
 
         Repeater {
           model: [
-            { key: "containers", label: "containers" },
-            { key: "images", label: "imagens" },
-            { key: "volumes", label: "volumes" },
-            { key: "networks", label: "redes" }
+            { key: "containers", label: root.tr("tab.containers") },
+            { key: "images", label: root.tr("tab.images") },
+            { key: "volumes", label: root.tr("tab.volumes") },
+            { key: "networks", label: root.tr("tab.networks") }
           ]
 
           Chip {
@@ -694,7 +739,7 @@ Panel {
           id: search
           anchors.verticalCenter: parent.verticalCenter
           width: parent.width - (chips.visible ? chips.implicitWidth + Style.space(6) : 0)
-          placeholderText: "serviço, stack, container ou imagem"
+          placeholderText: root.tr("search.placeholder")
           foreground: root.foreground
           onTextChanged: root.query = text
         }
@@ -708,9 +753,9 @@ Panel {
 
           Repeater {
             model: [
-              { key: "all", label: "todos" },
-              { key: "running", label: "rodando" },
-              { key: "stopped", label: "parados" }
+              { key: "all", label: root.tr("view.all") },
+              { key: "running", label: root.tr("view.running") },
+              { key: "stopped", label: root.tr("view.stopped") }
             ]
 
             Chip {
@@ -767,8 +812,7 @@ Panel {
 
           Text {
             anchors.verticalCenter: parent.verticalCenter
-            text: root.selectedCount + (root.selectedCount === 1
-              ? " selecionado" : " selecionados")
+            text: root.trPlural("selected.one", "selected.many", root.selectedCount)
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -777,7 +821,7 @@ Panel {
 
           Chip {
             anchors.verticalCenter: parent.verticalCenter
-            label: "limpar"
+            label: root.tr("action.clear")
             foreground: root.foreground
             dim: root.dim
             fontFamily: root.fontFamily
@@ -796,10 +840,10 @@ Panel {
             // can be told.
             model: root.tab === "containers"
               ? [
-                { key: "start", label: "iniciar" },
-                { key: "stop", label: "parar" },
-                { key: "restart", label: "reiniciar" },
-                { key: "logs", label: "logs" }
+                { key: "start", label: root.tr("action.start") },
+                { key: "stop", label: root.tr("action.stop") },
+                { key: "restart", label: root.tr("action.restart") },
+                { key: "logs", label: root.tr("action.logs") }
               ]
               : []
 
@@ -828,7 +872,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             // One confirmation naming the count and the size, not one per item:
             // a dialog that appears eleven times is a dialog nobody reads.
-            label: "remover"
+            label: root.tr("action.remove")
             visible: root.tab !== "containers"
             foreground: root.badColor
             dim: root.badColor
@@ -841,8 +885,8 @@ Panel {
               }
               if (removable.length === 0) return
               root.askConfirm(
-                Docker.resourceConfirmMessage(removable),
-                "Remover",
+                root.trRemoveResources(removable),
+                root.tr("action.remove"),
                 function() {
                   if (root.service) root.service.removeResources(removable)
                   root.selection = ({})
@@ -885,8 +929,8 @@ Panel {
             width: parent.width
             visible: root.tab === "containers" && root.visibleContainers.length === 0
             text: root.filtering
-              ? "Nenhum container com esse filtro."
-              : "Nenhum container."
+              ? root.tr("empty.containersFiltered")
+              : root.tr("empty.containers")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -895,7 +939,7 @@ Panel {
           Text {
             width: parent.width
             visible: root.tab !== "containers" && root.tabItems.length === 0
-            text: root.query !== "" ? "Nada com esse filtro." : "Nada aqui."
+            text: root.tr(root.query !== "" ? "empty.resourcesFiltered" : "empty.resources")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -1052,8 +1096,8 @@ Panel {
                       anchors.verticalCenter: parent.verticalCenter
                       text: {
                         var parts = []
-                        if (resourceRow.modelData.inUse) parts.push("em uso")
-                        if (resourceRow.modelData.anonymous) parts.push("anônimo")
+                        if (resourceRow.modelData.inUse) parts.push(root.tr("resource.inUse"))
+                        if (resourceRow.modelData.anonymous) parts.push(root.tr("resource.anonymous"))
                         if (resourceRow.modelData.detail) parts.push(resourceRow.modelData.detail)
                         return parts.join(" · ")
                       }
@@ -1091,15 +1135,15 @@ Panel {
                       PanelActionButton {
                         iconText: "󰩹"
                         tooltipText: resourceRow.removable
-                          ? "Remover"
-                          : "Rede do próprio engine — não removível"
+                          ? root.tr("tip.removeResource")
+                          : root.tr("tip.protectedNetwork")
                         foreground: root.dim
                         hoverColor: root.badColor
                         enabled: resourceRow.removable
                         opacity: enabled ? 1 : 0.4
                         onClicked: root.askConfirm(
-                          Docker.resourceConfirmMessage([resourceRow.modelData]),
-                          "Remover",
+                          root.trRemoveResources([resourceRow.modelData]),
+                          root.tr("action.remove"),
                           function() {
                             if (root.service) root.service.removeResources([resourceRow.modelData])
                           })
@@ -1203,7 +1247,7 @@ Panel {
                     PanelActionButton {
                       iconText: stackBlock.modelData.running > 0 ? "󰓛" : "󰐊"
                       tooltipText: stackBlock.modelData.running > 0
-                        ? "Parar o stack inteiro" : "Iniciar o stack inteiro"
+                        ? root.tr("tip.stackStop") : root.tr("tip.stackStart")
                       foreground: root.dim
                       hoverColor: root.foreground
                       enabled: root.service && !root.service.isBusy(stackBlock.modelData.project)
@@ -1217,7 +1261,7 @@ Panel {
 
                     PanelActionButton {
                       iconText: "󰑓"
-                      tooltipText: "Reiniciar o stack"
+                      tooltipText: root.tr("tip.stackRestart")
                       foreground: root.dim
                       hoverColor: root.foreground
                       enabled: root.service && !root.service.isBusy(stackBlock.modelData.project)
@@ -1230,7 +1274,7 @@ Panel {
                       iconText: "󰚩"
                       // A failing stack is usually a failing relationship, and
                       // one container's log is half of that conversation.
-                      tooltipText: "Analisar o stack inteiro com o agente"
+                      tooltipText: root.tr("tip.agentStack")
                       foreground: root.dim
                       hoverColor: root.foreground
                       visible: !stackBlock.modelData.loose
@@ -1241,8 +1285,8 @@ Panel {
                     PanelActionButton {
                       iconText: "󰈔"
                       tooltipText: Docker.composeFileFor(stackBlock.modelData)
-                        ? "Abrir o compose no editor"
-                        : "Sem compose conhecido"
+                        ? root.tr("tip.compose")
+                        : root.tr("tip.composeMissing")
                       foreground: root.dim
                       hoverColor: root.foreground
                       visible: Docker.composeFileFor(stackBlock.modelData) !== ""
@@ -1253,8 +1297,8 @@ Panel {
                     PanelActionButton {
                       iconText: "󰡨"
                       tooltipText: Docker.canScopeLazydocker(stackBlock.modelData)
-                        ? "lazydocker neste stack"
-                        : "lazydocker (sem stack para escopar)"
+                        ? root.tr("tip.lazydockerStack")
+                        : root.tr("tip.lazydockerLoose")
                       foreground: root.dim
                       hoverColor: root.foreground
                       onClicked: if (root.service)
@@ -1373,7 +1417,9 @@ Panel {
                         visible: dotMouse.hovered
                         // Colour without a word is decoration. This is the
                         // answer to "what does that marking mean".
-                        text: Docker.stateText(row.modelData) + " · clique para selecionar"
+                        text: root.tr("state.long." + Docker.stateKey(row.modelData),
+                          { code: Docker.stateDetailParts(row.modelData).code })
+                          + " · " + root.tr("select.hint")
                       }
                     }
 
@@ -1395,7 +1441,7 @@ Panel {
                     // that.
                     Text {
                       anchors.verticalCenter: parent.verticalCenter
-                      text: Docker.stateLabel(row.modelData)
+                      text: root.tr("state." + Docker.stateKey(row.modelData))
                       textFormat: Text.PlainText
                       color: row.stateColor
                       opacity: row.modelData.cell === "idle" ? 0.6 : 1
@@ -1411,10 +1457,19 @@ Panel {
                       // "Restarting" and "restarted 8846 times" are different
                       // problems; the second is invisible without asking.
                       text: {
-                        var detail = Docker.stateDetail(row.modelData)
+                        var parts = []
                         var count = root.service ? root.service.restartsFor(row.modelData.id) : -1
-                        var restarts = Docker.restartText(count)
-                        return restarts ? restarts + " · " + detail : detail
+                        // "Restarting" and "restarted 8846 times" are different
+                        // problems; the second is invisible without asking.
+                        if (count > 0) parts.push(
+                          root.trPlural("restarts.one", "restarts.many", count))
+
+                        var detail = Docker.stateDetailParts(row.modelData)
+                        if (detail.code !== null) parts.push(root.tr("detail.code", { code: detail.code }))
+                        var age = root.trAge(detail.age)
+                        if (age) parts.push(age)
+
+                        return parts.join(" · ")
                       }
                       textFormat: Text.PlainText
                       color: root.dim
@@ -1506,7 +1561,7 @@ Panel {
 
                       PanelActionButton {
                         iconText: "󰈙"
-                        tooltipText: "Logs"
+                        tooltipText: root.tr("tip.logs")
                         foreground: root.dim
                         hoverColor: root.foreground
                         onClicked: if (root.service)
@@ -1515,7 +1570,7 @@ Panel {
 
                       PanelActionButton {
                         iconText: "󰚩"
-                        tooltipText: "Analisar o log com o agente padrão"
+                        tooltipText: root.tr("tip.agent")
                         foreground: root.dim
                         hoverColor: root.foreground
                         onClicked: if (root.service)
@@ -1524,7 +1579,7 @@ Panel {
 
                       PanelActionButton {
                         iconText: "󰆍"
-                        tooltipText: "Shell no container"
+                        tooltipText: root.tr("tip.shell")
                         foreground: root.dim
                         hoverColor: root.foreground
                         visible: row.actions.canShell
@@ -1534,7 +1589,7 @@ Panel {
 
                       PanelActionButton {
                         iconText: "󰐊"
-                        tooltipText: "Despausar"
+                        tooltipText: root.tr("tip.unpause")
                         foreground: root.dim
                         hoverColor: root.foreground
                         visible: row.actions.canUnpause
@@ -1545,7 +1600,7 @@ Panel {
 
                       PanelActionButton {
                         iconText: row.actions.canStop ? "󰓛" : "󰐊"
-                        tooltipText: row.actions.canStop ? "Parar" : "Iniciar"
+                        tooltipText: root.tr(row.actions.canStop ? "tip.stop" : "tip.start")
                         foreground: root.dim
                         hoverColor: root.foreground
                         visible: (row.actions.canStop || row.actions.canStart)
@@ -1560,7 +1615,7 @@ Panel {
 
                       PanelActionButton {
                         iconText: "󰑓"
-                        tooltipText: "Reiniciar"
+                        tooltipText: root.tr("tip.restart")
                         foreground: root.dim
                         hoverColor: root.foreground
                         visible: row.actions.canRestart
@@ -1571,14 +1626,14 @@ Panel {
 
                       PanelActionButton {
                         iconText: "󰩹"
-                        tooltipText: "Remover o container"
+                        tooltipText: root.tr("tip.removeContainer")
                         foreground: root.dim
                         hoverColor: root.badColor
                         visible: row.actions.canRemove
                         enabled: !row.busy
                         onClicked: root.askConfirm(
-                          Docker.removeConfirmMessage(row.modelData),
-                          "Remover",
+                          root.trRemoveContainer(row.modelData.name),
+                          root.tr("action.remove"),
                           function() { if (root.service) root.service.removeContainer(row.modelData) })
                       }
                     }
@@ -1605,7 +1660,7 @@ Panel {
 
           Text {
             anchors.verticalCenter: parent.verticalCenter
-            text: "Espaço recuperável"
+            text: root.tr("cleanup.title")
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -1616,7 +1671,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             // A big cache is not an emergency until the disk is nearly full,
             // and then it very much is.
-            text: root.service ? root.service.pressure.text : ""
+            text: root.service ? root.trPressure(root.service.pressure) : ""
             color: root.service && root.service.pressure.level === "urgent"
               ? root.badColor
               : (root.service && root.service.pressure.level === "notice"
@@ -1629,7 +1684,7 @@ Panel {
 
           Chip {
             anchors.verticalCenter: parent.verticalCenter
-            label: root.cleanupOpen ? "fechar" : "ver"
+            label: root.tr(root.cleanupOpen ? "action.hide" : "action.show")
             foreground: root.foreground
             dim: root.dim
             fontFamily: root.fontFamily
@@ -1659,7 +1714,7 @@ Panel {
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: modelData.label
+                text: root.tr(modelData.labelKey)
                 textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
@@ -1682,14 +1737,14 @@ Panel {
               PanelActionButton {
                 anchors.verticalCenter: parent.verticalCenter
                 iconText: "󰩹"
-                tooltipText: modelData.detail
+                tooltipText: root.tr(modelData.detailKey)
                 foreground: root.dim
                 hoverColor: root.foreground
                 enabled: !busy && worthIt
                 opacity: enabled ? 1 : 0.4
                 onClicked: root.askConfirm(
-                  Docker.pruneConfirmMessage(modelData),
-                  "Limpar",
+                  root.trPruneConfirm(modelData),
+                  root.tr("action.clean"),
                   function() { if (root.service) root.service.prune(modelData) })
               }
             }
@@ -1702,7 +1757,7 @@ Panel {
             visible: root.service && root.service.volumesRow
 
             Text {
-              text: "volumes"
+              text: root.tr("cleanup.volumes")
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1720,7 +1775,7 @@ Panel {
             }
 
             Text {
-              text: "não removido daqui"
+              text: root.tr("cleanup.volumesNote")
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

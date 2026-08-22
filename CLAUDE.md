@@ -38,7 +38,7 @@ grim -g "<x>,<y> <w>x30" - | magick - -scale 800% /tmp/bar.png
 
 ## Checks
 
-`node test_docker.js` — 95 checks, plain node, no framework, no network, no daemon.
+`node test_docker.js` — 157 checks, plain node, no framework, no network, no daemon.
 
 `Docker.js` is a QML `.js` resource and cannot carry `export`, so the test file
 `eval`s it into scope. Keep `Docker.js` free of QML types (`Process`, `Timer`,
@@ -223,6 +223,42 @@ are separate entries in `PRUNE_TARGETS`, and dangling images carry
 **Volumes stay out of `PRUNE_TARGETS` permanently.** Everything else on that
 list can be rebuilt or pulled again. There is a test asserting no target
 mentions volumes; do not "complete" the list.
+
+## Shared modules
+
+**`.pragma library` is not optional on `Docker.js` and `I18n.js`.** Without it,
+every QML file that imports a `.js` resource gets its OWN copy: `Service.qml`
+switched the language on its instance while `Panel.qml` kept rendering from an
+untouched one, and the engine chosen in one was not the engine the other built
+commands with. The symptom is a setting that visibly does nothing while every
+piece works when tested alone.
+
+`.pragma library` is a QML directive, not JavaScript, so `test_docker.js` strips
+it before `eval`.
+
+## Translation
+
+Strings live in `I18n.js`; `Docker.js` deals in keys and data and never in prose
+the panel will show. Three rules the tests enforce:
+
+- **Both tables carry the same keys**, and the same placeholders in each. A key
+  present in one and missing in the other is a string that silently changes
+  language mid-panel.
+- **No sentence is concatenated from translated fragments.** Word order is not
+  universal. Anything with a value in it is a template.
+- **English is the fallback**, not the key: a panel reading `state.failed` is
+  worse than one reading it in the wrong language.
+
+**Every translated binding must read `languageEpoch`.** `I18n.t()` is a function
+call, so QML records no dependency on it and a language change repaints nothing.
+The `tr()` helpers on `Panel.qml` exist to make that read happen. Declaring the
+property without reading it — which is exactly how this shipped once — looks
+correct and does nothing.
+
+Durations are parsed into a count and a unit rather than translated word by
+word: "About an hour" became "cerca de an hora" that way, and putting articles
+in the table would be encoding grammar in a lookup. The numeral sidesteps
+articles in both languages.
 
 ## Trust model
 

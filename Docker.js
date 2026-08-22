@@ -1,3 +1,9 @@
+.pragma library
+
+// Shared, deliberately: without `.pragma library` each importing QML file gets
+// its own copy, and the engine selected in Service.qml would not be the engine
+// Panel.qml builds commands with.
+
 // Pure logic for the avila.docker plugin: parsing docker output, grouping by
 // compose stack, laying the mosaic grid out, and building command lines.
 //
@@ -71,75 +77,61 @@ function worstOf(states) {
   return worst
 }
 
-// What a colour means, in words. A reader who has to ask what the gold marking
-// is has been told nothing, however consistent the palette.
-function stateText(container) {
-  var state = String(container.state || "")
-  var health = String(container.health || "none")
-
-  if (state === "running" && health === "unhealthy") return "rodando, mas o healthcheck falha"
-  if (state === "running" && health === "starting") return "subindo — healthcheck ainda não passou"
-  if (state === "running") return "rodando"
-  if (state === "restarting") return "em loop de restart"
-  if (state === "paused") return "pausado"
-  if (state === "removing") return "sendo removido"
-  if (state === "dead") return "morto — o engine não conseguiu limpar"
-  if (state === "created") return "criado, nunca iniciado"
-  if (state === "exited") {
-    var code = exitCode(container.status)
-    return code === 0 ? "parado sem erro" : "saiu com erro (código " + code + ")"
-  }
-  return state
-}
-
-// The short word for a state, for the row itself.
-//
-// Colour cannot carry this on its own: a palette gives at most a couple of
-// usable hues, several themes set `accent` equal to the foreground, and four
-// states then separate by brightness alone. Docker's own phrasing does not
-// classify either — "Exited (143) About an hour ago" makes the reader do the
-// work of deciding whether 143 is bad news. The row says which of the four it
-// is, in a word, and the colour reinforces it.
-function stateLabel(container) {
+// Which of the states a container is in, as a key. The word for it lives in
+// I18n.js — this file deals in data, never in prose the panel will show.
+function stateKey(container) {
   var state = String(container.state || "")
   var health = String(container.health || "none")
 
   if (state === "running") {
     if (health === "unhealthy") return "unhealthy"
-    if (health === "starting") return "subindo"
-    return "rodando"
+    if (health === "starting") return "starting"
+    return "running"
   }
-  if (state === "restarting") return "reiniciando"
-  if (state === "paused") return "pausado"
-  if (state === "removing") return "removendo"
-  if (state === "dead") return "morto"
-  if (state === "created") return "criado"
-  if (state === "exited") return exitCode(container.status) === 0 ? "parado" : "falhou"
+  if (state === "restarting") return "restarting"
+  if (state === "paused") return "paused"
+  if (state === "removing") return "removing"
+  if (state === "dead") return "dead"
+  if (state === "created") return "created"
+  if (state === "exited") return exitCode(container.status) === 0 ? "stopped" : "failed"
   return state
 }
 
-// The number that matters next to the word, and nothing else. An exit code is
-// worth reading; "About an hour ago" is worth reading; the rest of docker's
-// sentence is scaffolding between them.
-function stateDetail(container) {
-  var state = String(container.state || "")
-  var status = String(container.status || "")
-  var age = relativeAge(status)
-
-  if (state === "exited") {
-    var code = exitCode(status)
-    return code === 0 ? age : "código " + code + " · " + age
+// The pieces that matter next to the word, and nothing else. An exit code is
+// worth reading; the age is worth reading; the rest of docker's sentence is
+// scaffolding between them.
+function stateDetailParts(container) {
+  var failed = String(container.state || "") === "exited" && exitCode(container.status) !== 0
+  return {
+    code: failed ? exitCode(container.status) : null,
+    age: parseAge(container.status)
   }
-  return age
 }
 
-// "Up 6 days (healthy)" -> "6 days". "Exited (143) 5 weeks ago" -> "5 weeks".
-// "Restarting (1) 39 seconds ago" -> "39 seconds".
-function relativeAge(status) {
+// "Up 6 days (healthy)" -> { count: 6, unit: "day" }.
+// "Exited (143) About an hour ago" -> { count: 1, unit: "hour", approx: true }.
+//
+// Structured rather than a string, because the string has to be rendered in
+// whatever language the panel is in, and "an hour" does not survive a word by
+// word translation.
+function parseAge(status) {
+  var text = String(status || "").trim()
   var match = /(?:Up|Exited \(\d+\)|Restarting \(\d+\))\s+(.+?)(?:\s+ago)?(?:\s+\(.*\))?$/
-    .exec(String(status || "").trim())
-  if (!match) return String(status || "")
-  return match[1].replace(/^About\s+/i, "").trim()
+    .exec(text)
+  if (!match) return { raw: text }
+
+  var phrase = match[1].trim()
+  var approx = /^About\s+/i.test(phrase)
+  phrase = phrase.replace(/^About\s+/i, "")
+
+  // "Less than a second" carries no count of its own.
+  if (/^Less than/i.test(phrase)) return { count: 1, unit: "second", approx: true, raw: phrase }
+
+  var parts = /^(\d+|a|an)\s+(second|minute|hour|day|week|month|year)s?$/i.exec(phrase)
+  if (!parts) return { raw: phrase }
+
+  var count = /^(a|an)$/i.test(parts[1]) ? 1 : Number(parts[1])
+  return { count: count, unit: parts[2].toLowerCase(), approx: approx, raw: phrase }
 }
 
 // Docker reports health as "none" (not ""), and keeps the last health value on
@@ -887,35 +879,35 @@ function dfRow(rows, type) {
 var PRUNE_TARGETS = [
   {
     id: "buildCache",
-    label: "build cache",
+    labelKey: "prune.buildCache",
     dfType: "Build Cache",
     args: ["builder", "prune", "-f"],
     risk: "safe",
-    detail: "Rebuilt on the next build."
+    detailKey: "prune.detail.buildCache"
   },
   {
     id: "danglingImages",
-    label: "dangling images",
+    labelKey: "prune.danglingImages",
     dfType: null,
     args: ["image", "prune", "-f"],
     risk: "safe",
-    detail: "Untagged layers left behind by rebuilds."
+    detailKey: "prune.detail.danglingImages"
   },
   {
     id: "unusedImages",
-    label: "unused images",
+    labelKey: "prune.unusedImages",
     dfType: "Images",
     args: ["image", "prune", "-a", "-f"],
     risk: "rebuildable",
-    detail: "Every image no container uses. They will be pulled again when needed."
+    detailKey: "prune.detail.unusedImages"
   },
   {
     id: "stoppedContainers",
-    label: "stopped containers",
+    labelKey: "prune.stoppedContainers",
     dfType: "Containers",
     args: ["container", "prune", "-f"],
     risk: "rebuildable",
-    detail: "Their logs and filesystem changes go with them."
+    detailKey: "prune.detail.stoppedContainers"
   }
 ]
 
@@ -932,10 +924,10 @@ function pruneTargets(dfRows) {
     var row = target.dfType ? dfRow(dfRows, target.dfType) : null
     out.push({
       id: target.id,
-      label: target.label,
+      labelKey: target.labelKey,
       command: [ENGINE].concat(target.args),
       risk: target.risk,
-      detail: target.detail,
+      detailKey: target.detailKey,
       // Unknown, not zero: dangling images have no row of their own in
       // `system df`, and claiming 0B would read as "nothing to do".
       reclaimable: row ? row.reclaimable : -1,
@@ -957,13 +949,6 @@ function totalReclaimable(dfRows) {
 
 function systemDfCommand() {
   return [ENGINE, "system", "df", "--format", "{{json .}}"]
-}
-
-// Spelled out rather than "are you sure": the number is the reason to click and
-// the wording is the only thing standing between a tidy-up and a surprise.
-function pruneConfirmMessage(target) {
-  var size = target.reclaimable >= 0 ? " (" + formatBytes(target.reclaimable) + ")" : ""
-  return "Remove " + target.label + size + "?\n" + target.detail
 }
 
 // ------------------------------------------------------------- filtering
@@ -1216,16 +1201,18 @@ function canRemoveResource(resource) {
   return true
 }
 
-function resourceConfirmMessage(resources) {
-  if (resources.length === 1) {
-    var one = resources[0]
-    return "Remove " + one.kind + " " + one.name + "?"
-  }
-
+// The facts a confirmation needs; the sentence is assembled in I18n, because
+// word order is not universal and a table of fragments cannot express that.
+function resourceConfirmFacts(resources) {
   var bytes = 0
   for (var i = 0; i < resources.length; i++) bytes += resources[i].size || 0
-  var size = bytes > 0 ? " (" + formatBytes(bytes) + ")" : ""
-  return "Remove " + resources.length + " items" + size + "?"
+
+  return {
+    count: resources.length,
+    kind: resources.length === 1 ? resources[0].kind : "",
+    name: resources.length === 1 ? resources[0].name : "",
+    bytes: bytes
+  }
 }
 
 // ------------------------------------------------------------ selection
@@ -1492,11 +1479,6 @@ function removeCommand(id) {
   return [ENGINE, "rm", id]
 }
 
-function removeConfirmMessage(container) {
-  return "Remove " + container.name + "?\n"
-    + "The container and its logs go with it. The image stays."
-}
-
 // A published port is a thing you want to open, not read out. Only ports bound
 // on the host are offered — an internal port has nothing to click.
 function portUrl(port) {
@@ -1652,14 +1634,6 @@ function parseRestarts(stdout) {
   return byId
 }
 
-// "Restarting" and "restarted 8846 times" are different problems, and the
-// second is invisible without this.
-function restartText(count) {
-  if (!isFinite(count) || count <= 0) return ""
-  if (count === 1) return "1 restart"
-  return count + " restarts"
-}
-
 // --------------------------------------------------------- disk pressure
 //
 // 226GB of reclaimable build cache is not an emergency until the disk is nearly
@@ -1673,18 +1647,14 @@ function diskPressure(dfRows, hostDisk, options) {
   var reclaimable = totalReclaimable(dfRows)
 
   if (used >= fullAt && reclaimable > 0) {
-    return {
-      level: "urgent",
-      text: "disco em " + Math.round(used * 100) + "% — "
-        + formatBytes(reclaimable) + " recuperáveis"
-    }
+    return { level: "urgent", percent: Math.round(used * 100), bytes: reclaimable }
   }
 
   if (reclaimable >= reclaimAt) {
-    return { level: "notice", text: formatBytes(reclaimable) + " recuperáveis" }
+    return { level: "notice", percent: Math.round(used * 100), bytes: reclaimable }
   }
 
-  return { level: "none", text: reclaimable > 0 ? formatBytes(reclaimable) : "" }
+  return { level: "none", percent: Math.round(used * 100), bytes: reclaimable }
 }
 
 function focusMonitorCommand(monitor) {

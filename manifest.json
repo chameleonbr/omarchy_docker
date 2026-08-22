@@ -41,7 +41,8 @@
       "maxWidth": 160,
       "notifications": true,
       "engine": "auto",
-      "view": "all"
+      "view": "all",
+      "language": "auto"
     },
     "schema": [
       {
@@ -64,6 +65,18 @@
           "auto",
           "docker",
           "podman"
+        ],
+        "defaultValue": "auto"
+      },
+      {
+        "key": "language",
+        "type": "string",
+        "label": "Language",
+        "description": "auto follows LANG. Anything untranslated falls back to English.",
+        "options": [
+          "auto",
+          "en",
+          "pt"
         ],
         "defaultValue": "auto"
       },
