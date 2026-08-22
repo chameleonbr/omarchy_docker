@@ -5,6 +5,54 @@
 // eval the file under plain node. Keep it that way — anything that touches
 // Process, Timer, or Color belongs in Service.qml or Panel.qml.
 
+// ----------------------------------------------------------------- engine
+//
+// Podman speaks almost the same CLI, so the difference is one word in front of
+// every command — and one difference in output shape, handled in parseRows().
+var ENGINE = "docker"
+
+function setEngine(name) {
+  ENGINE = name === "podman" ? "podman" : "docker"
+  return ENGINE
+}
+
+function engine() {
+  return ENGINE
+}
+
+function engineLabel() {
+  return ENGINE === "podman" ? "Podman" : "Docker"
+}
+
+// Docker prints one JSON object per line; Podman prints a single JSON array.
+// Accepting both is cheaper than branching at every call site.
+function parseRows(stdout) {
+  var text = String(stdout || "").trim()
+  if (!text) return []
+
+  if (text.charAt(0) === "[") {
+    try {
+      var array = JSON.parse(text)
+      return Array.isArray(array) ? array : []
+    } catch (error) {
+      return []
+    }
+  }
+
+  var rows = []
+  var lines = text.split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    if (!line) continue
+    try {
+      rows.push(JSON.parse(line))
+    } catch (error) {
+      continue // a partial line mid-stream must not drop the whole refresh
+    }
+  }
+  return rows
+}
+
 // ----------------------------------------------------------------- states
 
 // Cell/severity buckets, worst last. Used for colors and for stack rollups.
@@ -46,20 +94,11 @@ function exitCode(status) {
 // ------------------------------------------------------------- ps parsing
 
 function parsePs(stdout) {
-  var lines = String(stdout || "").split("\n")
+  var rows = parseRows(stdout)
   var containers = []
 
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i].trim()
-    if (!line) continue
-
-    var raw
-    try {
-      raw = JSON.parse(line)
-    } catch (error) {
-      continue // a partial line mid-stream must not drop the whole refresh
-    }
-
+  for (var i = 0; i < rows.length; i++) {
+    var raw = rows[i]
     var labels = parseLabels(raw.Labels)
     var name = firstName(raw.Names)
 
@@ -552,20 +591,11 @@ function worstOfCells(cells) {
 // ---------------------------------------------------------- stats parsing
 
 function parseStats(stdout) {
-  var lines = String(stdout || "").split("\n")
+  var rows = parseRows(stdout)
   var byId = {}
 
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i].trim()
-    if (!line) continue
-
-    var raw
-    try {
-      raw = JSON.parse(line)
-    } catch (error) {
-      continue
-    }
-
+  for (var i = 0; i < rows.length; i++) {
+    var raw = rows[i]
     var memory = parseMemUsage(raw.MemUsage)
     var sample = {
       name: String(raw.Name || ""),
@@ -746,20 +776,11 @@ function formatBytes(bytes) {
 // `docker system df --format '{{json .}}'` reports one row per resource type,
 // with Reclaimable as human text: "4.2GB (7%)" or, for build cache, "221.2GB".
 function parseSystemDf(stdout) {
-  var lines = String(stdout || "").split("\n")
+  var parsed = parseRows(stdout)
   var rows = []
 
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i].trim()
-    if (!line) continue
-
-    var raw
-    try {
-      raw = JSON.parse(line)
-    } catch (error) {
-      continue
-    }
-
+  for (var i = 0; i < parsed.length; i++) {
+    var raw = parsed[i]
     var reclaimable = String(raw.Reclaimable || "")
     rows.push({
       type: String(raw.Type || ""),
@@ -797,7 +818,7 @@ var PRUNE_TARGETS = [
     id: "buildCache",
     label: "build cache",
     dfType: "Build Cache",
-    command: ["docker", "builder", "prune", "-f"],
+    args: ["builder", "prune", "-f"],
     risk: "safe",
     detail: "Rebuilt on the next build."
   },
@@ -805,7 +826,7 @@ var PRUNE_TARGETS = [
     id: "danglingImages",
     label: "dangling images",
     dfType: null,
-    command: ["docker", "image", "prune", "-f"],
+    args: ["image", "prune", "-f"],
     risk: "safe",
     detail: "Untagged layers left behind by rebuilds."
   },
@@ -813,7 +834,7 @@ var PRUNE_TARGETS = [
     id: "unusedImages",
     label: "unused images",
     dfType: "Images",
-    command: ["docker", "image", "prune", "-a", "-f"],
+    args: ["image", "prune", "-a", "-f"],
     risk: "rebuildable",
     detail: "Every image no container uses. They will be pulled again when needed."
   },
@@ -821,7 +842,7 @@ var PRUNE_TARGETS = [
     id: "stoppedContainers",
     label: "stopped containers",
     dfType: "Containers",
-    command: ["docker", "container", "prune", "-f"],
+    args: ["container", "prune", "-f"],
     risk: "rebuildable",
     detail: "Their logs and filesystem changes go with them."
   }
@@ -841,7 +862,7 @@ function pruneTargets(dfRows) {
     out.push({
       id: target.id,
       label: target.label,
-      command: target.command,
+      command: [ENGINE].concat(target.args),
       risk: target.risk,
       detail: target.detail,
       // Unknown, not zero: dangling images have no row of their own in
@@ -864,7 +885,7 @@ function totalReclaimable(dfRows) {
 }
 
 function systemDfCommand() {
-  return ["docker", "system", "df", "--format", "{{json .}}"]
+  return [ENGINE, "system", "df", "--format", "{{json .}}"]
 }
 
 // Spelled out rather than "are you sure": the number is the reason to click and
@@ -874,24 +895,292 @@ function pruneConfirmMessage(target) {
   return "Remove " + target.label + size + "?\n" + target.detail
 }
 
+// ------------------------------------------------------------- filtering
+
+var VIEWS = ["all", "running", "stopped"]
+
+// Matches the things someone actually types: the service they know, the stack
+// it belongs to, the container name docker made up, or the image.
+function matchesQuery(container, query) {
+  var needle = String(query || "").trim().toLowerCase()
+  if (!needle) return true
+
+  var haystack = [
+    container.name, container.service, container.project, container.image
+  ].join(" ").toLowerCase()
+
+  return haystack.indexOf(needle) >= 0
+}
+
+function matchesView(container, view) {
+  if (view === "running") return container.state === "running" || container.state === "restarting"
+  if (view === "stopped") return container.state !== "running" && container.state !== "restarting"
+  return true
+}
+
+function searchContainers(containers, options) {
+  var settings = options || {}
+  var out = []
+
+  for (var i = 0; i < containers.length; i++) {
+    if (!matchesView(containers[i], settings.view || "all")) continue
+    if (!matchesQuery(containers[i], settings.query)) continue
+    out.push(containers[i])
+  }
+
+  return out
+}
+
+// --------------------------------------------------------- port conflicts
+
+// A stopped container will not come back if something else is already holding
+// its published port, and the error docker gives at that moment names the port
+// but not the culprit. This works out who is sitting on it, before the click.
+function portConflicts(containers) {
+  var holders = {}
+
+  for (var i = 0; i < containers.length; i++) {
+    var container = containers[i]
+    if (container.state !== "running" && container.state !== "restarting") continue
+    for (var p = 0; p < container.ports.length; p++) {
+      if (!holders[container.ports[p]]) holders[container.ports[p]] = container.name
+    }
+  }
+
+  var conflicts = {}
+
+  for (var j = 0; j < containers.length; j++) {
+    var candidate = containers[j]
+    if (candidate.state === "running" || candidate.state === "restarting") continue
+
+    var blocked = []
+    for (var q = 0; q < candidate.ports.length; q++) {
+      var port = candidate.ports[q]
+      if (holders[port]) blocked.push({ port: port, heldBy: holders[port] })
+    }
+
+    if (blocked.length > 0) conflicts[candidate.id] = blocked
+  }
+
+  return conflicts
+}
+
+function conflictText(blocked) {
+  if (!blocked || blocked.length === 0) return ""
+  var parts = []
+  for (var i = 0; i < blocked.length; i++) {
+    parts.push(blocked[i].port + " held by " + blocked[i].heldBy)
+  }
+  return parts.join(", ")
+}
+
+// ------------------------------------------------------------- resources
+//
+// Images, volumes and networks. Listed so they can be found and removed; the
+// engine refuses a delete while something still uses the resource, and that
+// refusal is shown rather than worked around.
+
+function imagesCommand() {
+  return [ENGINE, "images", "--format", "{{json .}}"]
+}
+
+function volumesCommand() {
+  return [ENGINE, "volume", "ls", "--format", "{{json .}}"]
+}
+
+function networksCommand() {
+  return [ENGINE, "network", "ls", "--format", "{{json .}}"]
+}
+
+function parseImages(stdout) {
+  var rows = parseRows(stdout)
+  var images = []
+
+  for (var i = 0; i < rows.length; i++) {
+    var raw = rows[i]
+    var repository = String(raw.Repository || raw.repository || "<none>")
+    var tag = String(raw.Tag || raw.tag || "")
+    images.push({
+      kind: "image",
+      id: String(raw.ID || raw.Id || ""),
+      name: tag && tag !== "<none>" ? repository + ":" + tag : repository,
+      group: repository,
+      size: parseBytes(raw.Size || raw.size),
+      inUse: Number(raw.Containers) > 0,
+      detail: String(raw.CreatedSince || "")
+    })
+  }
+
+  return images
+}
+
+function parseVolumes(stdout) {
+  var rows = parseRows(stdout)
+  var volumes = []
+
+  for (var i = 0; i < rows.length; i++) {
+    var raw = rows[i]
+    var labels = parseLabels(raw.Labels)
+    var name = String(raw.Name || raw.name || "")
+    volumes.push({
+      kind: "volume",
+      id: name,
+      name: name,
+      // Anonymous volumes are 64 hex characters of nothing; showing the project
+      // they belong to is the only way to tell them apart.
+      group: labels["com.docker.compose.project"] || "(loose)",
+      size: parseBytes(raw.Size),
+      anonymous: labels["com.docker.volume.anonymous"] !== undefined,
+      detail: String(raw.Driver || "")
+    })
+  }
+
+  return volumes
+}
+
+var DEFAULT_NETWORKS = ["bridge", "host", "none"]
+
+function parseNetworks(stdout) {
+  var rows = parseRows(stdout)
+  var networks = []
+
+  for (var i = 0; i < rows.length; i++) {
+    var raw = rows[i]
+    var labels = parseLabels(raw.Labels)
+    var name = String(raw.Name || raw.name || "")
+    networks.push({
+      kind: "network",
+      id: String(raw.ID || raw.Id || ""),
+      name: name,
+      group: labels["com.docker.compose.project"] || "(loose)",
+      size: 0,
+      // The engine's own networks are listed, because they are part of the
+      // picture, and never removable, because removing them breaks the engine.
+      protected: DEFAULT_NETWORKS.indexOf(name) >= 0,
+      detail: String(raw.Driver || "")
+    })
+  }
+
+  return networks
+}
+
+function resourceRemoveCommand(resource) {
+  if (resource.kind === "image") return [ENGINE, "rmi", resource.id]
+  if (resource.kind === "volume") return [ENGINE, "volume", "rm", resource.name]
+  if (resource.kind === "network") return [ENGINE, "network", "rm", resource.id]
+  return []
+}
+
+function canRemoveResource(resource) {
+  if (!resource) return false
+  if (resource.kind === "network") return !resource.protected
+  return true
+}
+
+function resourceConfirmMessage(resources) {
+  if (resources.length === 1) {
+    var one = resources[0]
+    return "Remove " + one.kind + " " + one.name + "?"
+  }
+
+  var bytes = 0
+  for (var i = 0; i < resources.length; i++) bytes += resources[i].size || 0
+  var size = bytes > 0 ? " (" + formatBytes(bytes) + ")" : ""
+  return "Remove " + resources.length + " items" + size + "?"
+}
+
+// --------------------------------------------------------------- gauges
+
+// Three numbers against their real ceilings, because a percentage with no
+// denominator is a number nobody can act on.
+function gauges(aggregate, dfRows, hostDisk) {
+  var images = dfRow(dfRows, "Images")
+  var containers = dfRow(dfRows, "Containers")
+  var volumes = dfRow(dfRows, "Local Volumes")
+  var cache = dfRow(dfRows, "Build Cache")
+
+  var engineBytes = (images ? images.size : 0)
+    + (containers ? containers.size : 0)
+    + (volumes ? volumes.size : 0)
+    + (cache ? cache.size : 0)
+
+  var diskTotal = hostDisk && hostDisk.total > 0 ? hostDisk.total : 0
+
+  return {
+    cpu: {
+      value: aggregate ? aggregate.cpu : 0,
+      max: 100,
+      text: aggregate && aggregate.samples > 0 ? formatPercent(aggregate.cpu) : "—"
+    },
+    memory: {
+      value: aggregate ? aggregate.memUsed : 0,
+      max: aggregate ? aggregate.memLimit : 0,
+      text: aggregate && aggregate.samples > 0
+        ? formatBytes(aggregate.memUsed) + "/" + formatBytes(aggregate.memLimit)
+        : "—"
+    },
+    disk: {
+      value: engineBytes,
+      max: diskTotal,
+      // The engine's footprint against the filesystem it lives on, not against
+      // itself: "53GB of 53GB" would always read as full.
+      text: engineBytes > 0 && diskTotal > 0
+        ? formatBytes(engineBytes) + "/" + formatBytes(diskTotal)
+        : "—"
+    }
+  }
+}
+
+function hostDiskCommand() {
+  return ["df", "-B1", "--output=used,size", "/"]
+}
+
+function parseHostDisk(stdout) {
+  var lines = String(stdout || "").trim().split("\n")
+  if (lines.length < 2) return { used: 0, total: 0 }
+
+  var parts = lines[lines.length - 1].trim().split(/\s+/)
+  return {
+    used: Number(parts[0]) || 0,
+    total: Number(parts[1]) || 0
+  }
+}
+
+// ---------------------------------------------------------- daemon control
+//
+// systemctl as the user, which authenticates through the ordinary polkit
+// prompt. No sudo, no pkexec, nothing setuid.
+
+function daemonCommand(action) {
+  if (action === "stop") return ["systemctl", "stop", ENGINE + ".service", ENGINE + ".socket"]
+  if (action === "start") return ["systemctl", "start", ENGINE + ".service"]
+  if (action === "enable") return ["systemctl", "enable", ENGINE + ".service"]
+  if (action === "disable") return ["systemctl", "disable", ENGINE + ".service"]
+  return []
+}
+
+function daemonStatusCommand() {
+  return ["systemctl", "is-enabled", ENGINE + ".service"]
+}
+
 // -------------------------------------------------------------- commands
 
 function psCommand() {
-  return ["docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}"]
+  return [ENGINE, "ps", "-a", "--no-trunc", "--format", "{{json .}}"]
 }
 
 function eventsCommand() {
-  return ["docker", "events", "--format", "{{json .}}"]
+  return [ENGINE, "events", "--format", "{{json .}}"]
 }
 
 function statsCommand() {
-  return ["docker", "stats", "--no-stream", "--format", "{{json .}}"]
+  return [ENGINE, "stats", "--no-stream", "--format", "{{json .}}"]
 }
 
 // Always address a container by id: names get reused across compose runs, ids
 // do not.
 function containerCommand(action, id) {
-  return ["docker", action, id]
+  return [ENGINE, action, id]
 }
 
 // Starting a stack is not the mirror image of stopping one.
@@ -904,7 +1193,7 @@ function stackCommand(action, group, hasCompose) {
   var containers = (group && group.containers) || []
 
   if (hasCompose && group && group.project && !group.loose) {
-    var command = ["docker", "compose"]
+    var command = [ENGINE, "compose"]
 
     // Compose needs to find the project's files; the labels record where they
     // were. Without this it looks in the current directory and finds nothing.
@@ -919,7 +1208,7 @@ function stackCommand(action, group, hasCompose) {
     return command
   }
 
-  var fallback = ["docker", action === "start" ? "start" : action]
+  var fallback = [ENGINE, action === "start" ? "start" : action]
   for (var i = 0; i < containers.length; i++) fallback.push(containers[i].id)
   return fallback
 }
@@ -947,7 +1236,7 @@ function containerActions(container) {
 }
 
 function removeCommand(id) {
-  return ["docker", "rm", id]
+  return [ENGINE, "rm", id]
 }
 
 function removeConfirmMessage(container) {
@@ -1025,7 +1314,7 @@ function containerTuiCommand(kind, container, tail) {
 
   if (kind === "logs") {
     return ["omarchy-launch-or-focus-tui", "--app-id=" + appId,
-      "docker", "logs", "-f", "--tail", String(Number(tail) || 200), id]
+      ENGINE, "logs", "-f", "--tail", String(Number(tail) || 200), id]
   }
 
   if (kind === "shell") {
@@ -1036,7 +1325,7 @@ function containerTuiCommand(kind, container, tail) {
     // runs, and the terminal window dies the instant it opens, with no error
     // anywhere. Test first, then exec.
     return ["omarchy-launch-or-focus-tui", "--app-id=" + appId,
-      "docker", "exec", "-it", id,
+      ENGINE, "exec", "-it", id,
       "sh", "-c", shellQuote(
         "if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi")]
   }
@@ -1062,7 +1351,7 @@ function focusMonitorCommand(monitor) {
 }
 
 function logsCommand(id, tail) {
-  return "docker logs -f --tail " + (Number(tail) || 200) + " " + id
+  return ENGINE + " logs -f --tail " + (Number(tail) || 200) + " " + id
 }
 
 // ---------------------------------------------------------- state changes
