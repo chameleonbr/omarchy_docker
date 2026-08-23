@@ -87,7 +87,9 @@ Item {
   readonly property bool hasSample: aggregate.samples > 0
 
   function groupsFor(settings) {
-    return Docker.sortGroups(Docker.groupByProject(Docker.applyFilters(containers, settings)))
+    return Docker.orderGroups(
+      Docker.groupByProject(Docker.applyFilters(containers, settings)),
+      settings ? settings.stackOrder : "failed")
   }
 
   function statsFor(id) {
@@ -572,12 +574,14 @@ Item {
   // as the other launches.
   function askAgent(container, monitor) {
     focusMonitor(monitor)
-    launch(Docker.askAgentCommand(root.askAgentScript, container, root.logTail))
+    launch(Docker.askAgentCommand(root.askAgentScript, container, root.logTail,
+                                  I18n.language()))
   }
 
   function askAgentStack(group, monitor) {
     focusMonitor(monitor)
-    launch(Docker.askAgentStackCommand(root.askAgentStackScript, group, root.logTail))
+    launch(Docker.askAgentStackCommand(root.askAgentStackScript, group, root.logTail,
+                                       I18n.language()))
   }
 
   function openCompose(group, monitor) {

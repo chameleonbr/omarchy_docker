@@ -24,7 +24,6 @@
       "groupBy": "auto",
       "cellGap": 2,
       "pulseRestarting": true,
-      "metrics": "cpu,mem",
       "metricRotateMs": 4000,
       "statsIntervalMs": 30000,
       "statsOnBattery": false,
@@ -42,7 +41,15 @@
       "notifications": true,
       "engine": "auto",
       "view": "all",
-      "language": "auto"
+      "language": "auto",
+      "metricCpu": true,
+      "metricMem": true,
+      "metricMemPerc": false,
+      "metricNet": false,
+      "metricCount": false,
+      "palette": "theme",
+      "paletteCustom": "",
+      "stackOrder": "failed"
     },
     "schema": [
       {
@@ -79,6 +86,18 @@
           "pt"
         ],
         "defaultValue": "auto"
+      },
+      {
+        "key": "stackOrder",
+        "type": "string",
+        "label": "Stack order",
+        "description": "How the popup lists stacks. A-Z is alphabetical; running first puts the stacks that are up above the ones that are down; failed first opens on whatever is broken. The bar mosaic always stays alphabetical, so a cell never moves when a container restarts.",
+        "options": [
+          "failed",
+          "name",
+          "running"
+        ],
+        "defaultValue": "failed"
       },
       {
         "key": "groupBy",
@@ -140,6 +159,29 @@
         "defaultValue": 160
       },
       {
+        "key": "palette",
+        "type": "string",
+        "label": "Cell colours",
+        "description": "theme follows the active Omarchy theme and changes with it. The named palettes are fixed. custom reads the field below.",
+        "options": [
+          "theme",
+          "traffic",
+          "ember",
+          "ocean",
+          "violet",
+          "mono",
+          "custom"
+        ],
+        "defaultValue": "theme"
+      },
+      {
+        "key": "paletteCustom",
+        "type": "string",
+        "label": "Custom colours",
+        "description": "Three hex values in order: healthy, warning, broken. For example #3fb950,#d29922,#f85149. Anything else falls back to the theme.",
+        "defaultValue": ""
+      },
+      {
         "key": "pulseRestarting",
         "type": "boolean",
         "label": "Pulse restarting containers",
@@ -147,11 +189,39 @@
         "defaultValue": true
       },
       {
-        "key": "metrics",
-        "type": "string",
-        "label": "Metrics to cycle",
-        "description": "Comma separated, in order: cpu, mem, memPerc, net, count. Empty hides the label.",
-        "defaultValue": "cpu,mem"
+        "key": "metricCpu",
+        "type": "boolean",
+        "label": "Rotate: CPU",
+        "description": "Total CPU across every running container.",
+        "defaultValue": true
+      },
+      {
+        "key": "metricMem",
+        "type": "boolean",
+        "label": "Rotate: memory used",
+        "description": "Total memory in bytes.",
+        "defaultValue": true
+      },
+      {
+        "key": "metricMemPerc",
+        "type": "boolean",
+        "label": "Rotate: memory %",
+        "description": "Memory used against the containers' own limits.",
+        "defaultValue": false
+      },
+      {
+        "key": "metricNet",
+        "type": "boolean",
+        "label": "Rotate: network in",
+        "description": "Bytes received since each container started.",
+        "defaultValue": false
+      },
+      {
+        "key": "metricCount",
+        "type": "boolean",
+        "label": "Rotate: running count",
+        "description": "running / total. The only metric that costs nothing to sample.",
+        "defaultValue": false
       },
       {
         "key": "metricRotateMs",
@@ -220,8 +290,8 @@
       {
         "key": "dockerUrl",
         "type": "string",
-        "label": "Web UI",
-        "description": "Opened on right click.",
+        "label": "Right click opens this URL",
+        "description": "Any web UI you keep for containers — Portainer, Dozzle, a compose dashboard. Opens in your browser. Empty means right click just refreshes the state instead.",
         "defaultValue": ""
       },
       {

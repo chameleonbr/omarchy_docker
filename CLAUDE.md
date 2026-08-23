@@ -43,7 +43,7 @@ grim -g "<x>,<y> <w>x30" - | magick - -scale 800% /tmp/bar.png
 
 ## Checks
 
-`node test_docker.js` — 157 checks, plain node, no framework, no network, no daemon.
+`node test_docker.js` — 190 checks, plain node, no framework, no network, no daemon.
 
 `Docker.js` is a QML `.js` resource and cannot carry `export`, so the test file
 `eval`s it into scope. Keep `Docker.js` free of QML types (`Process`, `Timer`,
@@ -178,6 +178,55 @@ shell every time you run `docker compose up`. Do not merge them.
   restarts destroy the only thing the mosaic is for: knowing which cell is which
   without reading anything. Order is `(project, service, name)`, full stop.
 
+  The **Stack order** setting does not change this. `orderGroups()` reads it and
+  is called from the popup — `Service.groupsFor()` and `Panel.visibleGroups` —
+  and from nowhere else. Wiring the mosaic to it would reintroduce exactly the
+  bug above with a settings key on top, and `failed` is the default, so it would
+  reintroduce it for most users.
+
+- **A palette overrides all three state colours or none of them.** `theme`, the
+  default, means the panel derives them from the active Omarchy theme and they
+  follow a theme switch. A named palette replaces ok, warn and bad together:
+  half a palette leaves the widget speaking two colour languages, and there is
+  no reading of "green, gold, theme-urgent" that means anything. A custom
+  palette that is not exactly three hex values resolves to `null`, which is the
+  theme — a half-typed field is the normal state of a text field, and rejecting
+  it silently beats rendering the mosaic in Qt's fallback white.
+
+- **`cellPalette`, not `palette`.** `QQuickItem` has owned a `palette` property
+  since Qt 6, and shadowing it on the widget root is at best confusing.
+
+- **"Reset everything" sits beside the count it undoes, not beside the close
+  button.** Both started in the settings header's action row, so anchoring that
+  row to the right edge made them neighbours in the corner people aim at to
+  leave a screen. `ConfirmDialog` still stands between the two, so the gap is a
+  margin of comfort rather than a fix for a bug — and the button reads better
+  next to the number it acts on. There is no undo behind it either way.
+
+- **A header's actions cannot be right-aligned inside a `Row`.** A Row places
+  each child after the one before it, so the buttons land wherever the text
+  before them happens to end. Both headers used to reserve the leftover width
+  for the count text with a guessed constant — `parent.width -
+  headerActions.implicitWidth - Style.space(140)` — which put the buttons near
+  the right edge and never on it. `headerRow` and `settingsHeader` are `Item`s:
+  the title anchors left, the actions anchor right, and the text between them
+  anchors to both. No constant, and it stays exact at any panel width.
+
+- **`Array.isArray` is false for what the plugin registry hands over.** The
+  manifest schema crosses the QML boundary and comes back array-LIKE, with a
+  `length` and indices but not an Array. Guarding on `isArray` rendered every
+  dropdown in the settings screen as a plain text box — the right value in it,
+  and no way to discover the other choices. `Docker.optionsOf()` copies by
+  length; `settingsSections` and `changedSettingCount` test `length !==
+  undefined`.
+
+- **Never bind `height` on a wrapping `Text`.** `height: visible ?
+  implicitHeight : 0` on a `Text` with `wrapMode` is a binding loop: the
+  implicit height comes from a layout that the explicit height feeds back into.
+  A `Column` already skips an invisible child, so the binding buys nothing. The
+  one place that genuinely needs it — an anchored block whose neighbour anchors
+  to its bottom — makes the *neighbour's* anchor conditional instead.
+
 - **Never let the metric label size to its current value.** It rotates every few
   seconds, and a label that changes width shoves every widget to its right
   across the bar on each tick. `metricWidthSample` reserves the widest value the
@@ -236,11 +285,87 @@ PopupWindow and takes no keyboard focus at all: the search field looked like a
 text field, was one, and never received a keystroke. KeyboardPanel is the qs.Ui
 surface built for this, on PanelWindow with a keyboard focus prime.
 
+**The settings screen is a child of the panel, filling it, at `z: 90`.** Same
+rule as `ConfirmDialog` below, and below its `z: 100` on purpose: a
+confirmation raised from the settings screen — "reset everything" — has to land
+on top of it. It also carries its own `MouseArea` swallowing all buttons and
+wheel events, because an opaque surface that still passes clicks through to the
+list underneath is worse than no overlay, and `Keys.onEscapePressed`, so that
+Escape leaves the settings rather than closing the whole panel.
+
+**Closing the panel closes the settings with it.** `settingsOpen` is reset in
+`onOpenedChanged`, next to the line that clears the search query, and for the
+same reason: state that survives a close makes the next open a surprise. A
+settings screen left standing means the next click on the widget shows settings
+instead of containers, and clicking away from the panel is the same gesture
+people use to back out of them anyway.
+
 **`ConfirmDialog` fills the surface it is a child of.** Placed on the plugin
 root — which is the bar widget, about a hundred pixels wide — its scrim
 anchored to that, so every confirmation rendered inside the bar where nobody
 could see or click it, and every destructive button silently did nothing. It
 belongs inside the panel, `anchors.fill: parent`.
+
+## Keyboard
+
+The panel opens in **command mode**: nothing has a text cursor in it, so a bare
+letter is a shortcut — `f` for find, `s` for settings, `r` to refresh, `1`…`9`
+for sections, Tab to step through them, Escape to back out. `f` moves focus into
+the search field; Escape moves it back.
+
+**Keys cannot be handled from outside the panel window.** `KeyboardPanel`
+builds its content inside a `PanelWindow` of its own, so a key event rises to
+the root of THAT window and stops. A `Keys.onPressed` on the bar widget or on
+the `KeyboardPanel` item never fires — which is exactly how the first version
+shipped: every shortcut correct, and not one of them reachable. The handler
+has to hang on an item that is inside the content.
+
+That item is `panelKeys`, a `PanelKeyCatcher` from qs.Ui — the kit's own key
+dispatcher, which parses Escape/Tab/characters into signals and carries a
+`blocked` flag for exactly the case where a field should get the keys instead.
+It is zero-sized rather than wrapping the content: wrapping buys
+`Keys.priority: BeforeItem`, and this panel does not need to outrank its own
+children because focus is moved explicitly and the catcher only ever holds the
+keyboard when nothing is being typed into.
+
+**`PanelKeyCatcher` claims some keys before `textKey` ever sees them**: `x`,
+`h`/`j`/`k`/`l`, Space and Return go to its own signals. Do not plan a shortcut
+on those without connecting the matching signal.
+
+**Anything with a text cursor must set `typing`.** `root.typing` is the search
+field's focus OR `settingsTyping`, which the settings text fields set from
+`onActiveFocusChanged`. It feeds `blocked` and is checked again inside
+`Docker.keyAction`. Two locks on purpose: a stray focus state would turn every
+letter of a search into a command, which is the worst way for this to fail.
+
+**Do not put a `focus:` binding on the settings surface.** One was left there
+from an earlier draft and quietly took the keyboard back the moment the screen
+opened: `s` reached the catcher and opened the settings, and then nothing else
+worked, because the catcher no longer had focus.
+
+**Escape steps back out of one thing at a time** — settings, then the filter,
+then the panel. Closing the whole panel while a filter is still typed loses
+both at once, and reopening gives back neither. Inside a text field Escape is
+handled by the field, which just hands the keyboard back; the filter survives,
+and a second Escape is what clears it.
+
+`Docker.keyAction(press, state)` decides; `Panel.qml` carries the verb out. The
+split is not style: **the panel cannot be driven from a script.** It only holds
+keyboard focus while it is genuinely focused, and it closes a second or two
+after losing it, so any check of the ladder has to be a unit test. Two tests
+keep the halves honest: every verb `keyAction` can return is reachable, and
+`Panel.qml` dispatches on exactly the verbs `KEY_ACTIONS` declares — a typo on
+either side is a shortcut that silently does nothing.
+
+"Section" means the tabs while the list is up and the setting groups while the
+settings screen is. `nextSection()` wraps in both directions, which is the whole
+reason it is a function: `(i - 1) % count` lands on -1 at the first item, and
+the shortcut dies at the top of the list.
+
+A jumped-to section brightens its header — without it Tab scrolls and nothing
+tells you where it landed. The shortcuts are printed under the settings header,
+and in the search field's placeholder while it is not focused, which is the one
+place someone wondering how to type into it will be looking.
 
 ## Nothing moves under the cursor
 
@@ -253,9 +378,17 @@ row y was identical.
 
 ## Panel height
 
-The list takes what is left; the chrome takes what it needs. `shell.chrome` sums
-the fixed blocks from the blocks themselves — deriving it from the column's own
-height would be circular — and the list gets the remainder.
+**The panel is one size.** The list takes what is left; the chrome takes what it
+needs. `shell.chrome` sums the fixed blocks from the blocks themselves —
+deriving it from the column's own height would be circular — and the list gets
+the remainder, `shell.roomForList`.
+
+**All of the remainder, not `min(content, remainder)`.** Sized to its content
+the panel breathed: a search that matched nothing collapsed it to a sliver, and
+opening the settings inside that sliver gave a whole settings screen a few rows
+of room. The height of a panel should say nothing about how many containers
+matched a filter, and the settings screen — which fills the same card — inherits
+whatever the list left behind.
 
 **Both the list and `contentHeight` must use the same ceiling.** Sizing the list
 against the screen while `contentHeight` capped at something smaller was exactly
@@ -274,6 +407,59 @@ piece works when tested alone.
 
 `.pragma library` is a QML directive, not JavaScript, so `test_docker.js` strips
 it before `eval`.
+
+## Settings
+
+The screen is `settingsSurface` in `Panel.qml`, and it is **built from
+`manifest.json`'s own `schema`**, read back out of the shell's plugin registry
+(`bar.shell.pluginRegistry.installedPlugins[pluginId].barWidget.schema`). There
+is no second copy of the field list in QML. Adding a setting means adding it to
+the manifest and to `SETTINGS_SECTIONS` in `Docker.js`; a key in the schema and
+in no section lands in a trailing "other" section rather than disappearing, and
+a test fails when that happens.
+
+Writes go **straight through `pluginRegistry.setBarWidget(id, key, value, {})`**,
+not out to `omarchy bar set` and back. That is safe while the panel is open
+because `Bar.applyBarConfig` diffs the new layout with
+`BarModel.inlineSettingsDelta` and patches live widgets in place when only
+inline settings changed — it does not rebuild them. If it did, every widget
+would be torn down mid-edit and the panel would vanish under the user on each
+change. Verified by diffing `shell.json` around an open/close of the screen: no
+write happens just from opening it.
+
+`canWriteSettings` guards the call. A shell without `setBarWidget` gets a
+message naming `omarchy bar set`, because every control looking live and doing
+nothing is this plugin's most-repeated failure.
+
+**Read each setting with `setting(key, fallback)`, never off the `settings`
+object.** The host injects only the keys present in that widget's `shell.json`
+entry, so `settings` on a fresh install is `{}` — handing it straight to
+`metricListFromFlags` rotates nothing at all while every piece tests fine.
+
+The screen also has an IPC entry: `omarchy-shell avila.ultra-docker settings`
+(and `settingsOn <monitor>`), which is what a keybinding wants and what makes
+the thing testable without a pointer.
+
+There is still **no shell-provided settings form** for plugin widgets: nothing
+in `~/.local/share/omarchy/shell` or `/usr/share/omarchy/shell` renders a
+`schema`, and the Omarchy menu offers only bar position and transparency. The
+manifest `schema` is therefore two things at once — the source this screen is
+built from, and the description a future shell renderer will read. Keep it
+accurate.
+
+Only `string` (with or without `options`), `integer` (`min`/`max`/`step`) and
+`boolean` are used. `Docker.settingControl()` maps those onto the qs.Ui
+controls — `Dropdown`, `NumberField`, `TextField`, `ToggleSwitch` — and is the
+one testable place that mapping lives. There is no multi-select, which is why
+"which metrics rotate" is one boolean per metric (`metricCpu`, `metricMem`,
+`metricMemPerc`, `metricNet`, `metricCount`, read by
+`Docker.metricListFromFlags()`) rather than the comma-separated string it used
+to be. Rotation follows `METRICS` order: a set of independent booleans has
+nowhere to express an order.
+
+`coerceSetting()` clamps and validates **before the write**, never on read.
+Storing a value out of range and clamping it on every read leaves the screen
+showing one number and the widget using another.
 
 ## Translation
 
@@ -321,6 +507,19 @@ exist. Test through the actual script.
 `bin/omarchy-docker-ask-agent` follows `omarchy-agent-crash`: gather facts, write
 the bulky part to a file, pass a prompt that points at it, then
 `exec omarchy-agent --prompt`. Never put a log in argv.
+
+**Both scripts take a trailing `lang` argument, and the widget always passes
+one.** `auto` reads the environment, which is what running them by hand does.
+The widget passes its own Language setting instead, because the two can
+disagree — the setting can be `pt` on an `en_US` machine — and a prompt in a
+language the user did not choose is one they have to translate before they can
+read the answer.
+
+Each script carries **two whole prompts**, one per language, and a table of its
+failure messages. The same rule as `I18n.js` applies and matters more here: a
+prompt assembled from translated fragments reads badly, and a badly worded
+prompt costs the answer. The tests assert both prompts are present in both
+scripts and that English is the fallback for an unknown tag.
 
 `omarchy-default-agent` prints the chosen agent and prints nothing when none is
 set — Omarchy deliberately picks none for you, so the empty case is normal and

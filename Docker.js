@@ -324,6 +324,33 @@ function stableGroupOrder(groups) {
   })
 }
 
+// Stacks that have something running first, then the ones that are entirely
+// down. Alphabetical inside each half, so a stack only ever moves when it
+// actually starts or stops.
+function runningFirstOrder(groups) {
+  return groups.slice().sort(function(left, right) {
+    if (left.loose !== right.loose) return left.loose ? 1 : -1
+    var leftOn = left.running > 0 ? 1 : 0
+    var rightOn = right.running > 0 ? 1 : 0
+    if (leftOn !== rightOn) return rightOn - leftOn
+    return compare(left.project, right.project)
+  })
+}
+
+// The three orders offered in settings, for the popup list only.
+//
+// The mosaic is NOT one of this function's callers and must never become one:
+// its cells are found by position, and a cell that moves when a container
+// restarts destroys the only thing the mosaic is for. `stableGroupOrder` is
+// what the mosaic uses, whatever this setting says.
+var STACK_ORDERS = ["failed", "name", "running"]
+
+function orderGroups(groups, order) {
+  if (order === "name") return stableGroupOrder(groups)
+  if (order === "running") return runningFirstOrder(groups)
+  return sortGroups(groups)
+}
+
 function rollup(containers) {
   var running = 0
   var states = []
@@ -762,6 +789,284 @@ function aggregateStats(containers, statsById) {
   }
 }
 
+// -------------------------------------------------------------- settings
+//
+// The settings screen is built from the plugin's own manifest schema, read
+// back out of the shell's plugin registry. There is no second copy of the
+// field list anywhere: `manifest.json` describes the keys, their types and
+// their ranges, and this file only decides how to lay them out.
+//
+// English labels come from the manifest too. Only the Portuguese lives in
+// `I18n.js`, under `settings.*` — see the note there. Duplicating the English
+// into a translation table would mean two places to edit every time a key
+// gains a description, and one of them would go stale.
+
+// Sections, in the order they are shown. A key listed here appears in that
+// section; a key in the schema and in no section lands in a trailing "other"
+// section rather than disappearing, because a settings screen that silently
+// omits a setting is worse than one with an ugly section at the bottom.
+var SETTINGS_SECTIONS = [
+  { key: "look", keys: [
+    "palette", "paletteCustom", "cellSize", "cellGap", "stackGap",
+    "groupStacks", "maxWidth", "pulseRestarting"
+  ] },
+  { key: "content", keys: [
+    "groupBy", "stackOrder", "showStopped", "hideProjects"
+  ] },
+  { key: "label", keys: [
+    "metricCpu", "metricMem", "metricMemPerc", "metricNet", "metricCount",
+    "metricRotateMs"
+  ] },
+  { key: "actions", keys: [
+    "primaryAction", "dockerUrl", "logTail", "notifications"
+  ] },
+  { key: "system", keys: [
+    "language", "engine", "statsIntervalMs", "statsOnBattery",
+    "pollIntervalMs", "openPollIntervalMs"
+  ] }
+]
+
+function settingsSections(schema) {
+  // Same reason as optionsOf: what the registry hands over is array-like.
+  var fields = schema && schema.length !== undefined ? schema : []
+  var byKey = ({})
+  for (var i = 0; i < fields.length; i++) {
+    if (fields[i] && fields[i].key) byKey[String(fields[i].key)] = fields[i]
+  }
+
+  var placed = ({})
+  var sections = []
+
+  for (var s = 0; s < SETTINGS_SECTIONS.length; s++) {
+    var wanted = SETTINGS_SECTIONS[s]
+    var found = []
+    for (var k = 0; k < wanted.keys.length; k++) {
+      var field = byKey[wanted.keys[k]]
+      if (!field) continue // named here, not in the schema: nothing to show
+      placed[wanted.keys[k]] = true
+      found.push(field)
+    }
+    if (found.length > 0) sections.push({ key: wanted.key, fields: found })
+  }
+
+  // Anything the sections above do not name. A new schema key shows up here
+  // until someone files it, which is visible and fixable — unlike vanishing.
+  var rest = []
+  for (var r = 0; r < fields.length; r++) {
+    var extra = fields[r]
+    if (!extra || !extra.key || placed[String(extra.key)]) continue
+    rest.push(extra)
+  }
+  if (rest.length > 0) sections.push({ key: "other", fields: rest })
+
+  return sections
+}
+
+// What a field is currently set to. `settings` holds only the keys the user
+// has actually changed, so everything else falls back to the manifest default
+// — the same rule `setting(key, fallback)` follows in QML.
+function settingValue(settings, field) {
+  if (!field) return undefined
+  var current = settings ? settings[String(field.key)] : undefined
+  if (current === undefined || current === null) return field.defaultValue
+  return current
+}
+
+// What to write. Types are the schema's, not the control's: a number field
+// hands back a number and a dropdown a string, but a hand-edited shell.json
+// can hold anything, and a value out of range would be stored and then
+// silently clamped on every read, leaving the screen showing one number and
+// the widget using another.
+function coerceSetting(field, raw) {
+  if (!field) return raw
+  var type = String(field.type || "string")
+
+  if (type === "boolean") return raw === true
+
+  if (type === "integer") {
+    var number = Math.round(Number(raw))
+    if (!isFinite(number)) number = Number(field.defaultValue) || 0
+    if (field.min !== undefined && number < field.min) number = field.min
+    if (field.max !== undefined && number > field.max) number = field.max
+    return number
+  }
+
+  var text = String(raw === undefined || raw === null ? "" : raw)
+  // A dropdown must never store a value it cannot show back.
+  var options = optionsOf(field)
+  if (options.length > 0 && options.indexOf(text) < 0) {
+    return String(field.defaultValue === undefined ? "" : field.defaultValue)
+  }
+  return text
+}
+
+// The schema arrives from the shell's plugin registry, having crossed the QML
+// boundary, and `Array.isArray` says false for what comes back — the options
+// list is array-LIKE, not an Array. Trusting isArray here rendered every
+// dropdown in the settings screen as a plain text box, with the right value in
+// it and no way to discover the other choices. Copy it out by length instead.
+function optionsOf(field) {
+  var source = field ? field.options : null
+  if (!source || source.length === undefined) return []
+  var out = []
+  for (var i = 0; i < source.length; i++) out.push(String(source[i]))
+  return out
+}
+
+// Which control the field gets. Kept here rather than as a chain of ternaries
+// in QML so the mapping is one testable place.
+function settingControl(field) {
+  if (!field) return "text"
+  var type = String(field.type || "string")
+  if (type === "boolean") return "toggle"
+  if (type === "integer") return "number"
+  return optionsOf(field).length > 0 ? "choice" : "text"
+}
+
+// A field is at its default when nothing is stored for it, or when what is
+// stored equals the default. Both count: `omarchy bar set` writes the default
+// value happily, and a screen that called that "changed" would show a reset
+// button that does nothing.
+function settingIsDefault(settings, field) {
+  if (!field) return true
+  var current = settings ? settings[String(field.key)] : undefined
+  if (current === undefined || current === null) return true
+  return coerceSetting(field, current) === coerceSetting(field, field.defaultValue)
+}
+
+function changedSettingCount(settings, schema) {
+  var fields = schema && schema.length !== undefined ? schema : []
+  var count = 0
+  for (var i = 0; i < fields.length; i++) {
+    if (!settingIsDefault(settings, fields[i])) count++
+  }
+  return count
+}
+
+// -------------------------------------------------------------- keyboard
+//
+// What a key press means, as a verb. Pure on purpose: the panel cannot be
+// driven from a test — it only holds keyboard focus when a person actually
+// clicked it — so the decision lives here and `Panel.qml` is left with the
+// translation from Qt key codes and the four lines that carry each verb out.
+//
+// The panel opens in command mode: nothing has a text cursor in it, and a bare
+// letter is a shortcut. `f` puts you in the search field, Escape takes you back
+// out. Shortcuts behind a modifier were the first attempt and reached nothing —
+// see the note in CLAUDE.md — but they were also the wrong shape: a panel you
+// open to look at something should not need a chord to be driven.
+
+var KEY_ACTIONS = [
+  "", "closeSettings", "clearQuery", "closePanel", "toggleSettings",
+  "focusSearch", "refresh", "nextSection", "previousSection", "jumpSection"
+]
+
+function keyAction(press, state) {
+  var event = press || ({})
+  var now = state || ({})
+  // Characters arrive as characters — `PanelKeyCatcher` hands over
+  // `event.text` — and the named keys arrive by name. Shift on a letter is a
+  // capital, not a different shortcut.
+  var key = String(event.key === undefined || event.key === null ? "" : event.key)
+  if (key.length === 1) key = key.toLowerCase()
+
+  // Escape works from inside a text field too — it is how you get out of one.
+  // One key, one step back out of wherever you are: closing the whole panel
+  // while a filter is still typed loses the filter and the panel at once, and
+  // reopening gives back neither.
+  if (key === "escape") {
+    if (now.settingsOpen) return { action: "closeSettings" }
+    if (now.hasQuery) return { action: "clearQuery" }
+    return { action: "closePanel" }
+  }
+
+  // A character being typed is a character. `PanelKeyCatcher.blocked` already
+  // keeps the shortcuts off a focused field, but a stray focus state would
+  // otherwise turn every letter of a search into a command, which is the worst
+  // way for this to fail.
+  if (now.typing) return { action: "" }
+
+  // Ctrl, Alt and Super belong to the compositor and to the terminal habits
+  // people already have. A bare letter is ours; a modified one is not.
+  if (event.ctrl || event.alt || event.meta) return { action: "" }
+
+  if (key === "f" || key === "/") return { action: "focusSearch" }
+  if (key === "s" || key === ",") return { action: "toggleSettings" }
+  if (key === "r") return { action: "refresh" }
+
+  if (key === "tab") {
+    return { action: event.shift ? "previousSection" : "nextSection" }
+  }
+  // Shift+Tab arrives as Backtab on its own on most stacks.
+  if (key === "backtab") return { action: "previousSection" }
+
+  if (key.length === 1 && key >= "1" && key <= "9") {
+    return { action: "jumpSection", index: Number(key) - 1 }
+  }
+
+  return { action: "" }
+}
+
+// Wrapping, and wrapping for a negative step too: JS % keeps the sign of the
+// left operand, so a plain `(i - 1) % count` lands on -1 at the first item.
+function nextSection(current, count, delta) {
+  if (count <= 0) return 0
+  var from = current < 0 ? 0 : current
+  return ((from + delta) % count + count) % count
+}
+
+// --------------------------------------------------------------- palette
+//
+// Three colours, and only three: healthy, needs attention, broken. A palette
+// with more entries than the widget has states would be a palette that lies.
+//
+// `theme` is the default and is not a palette at all — it means "let the panel
+// derive the colours from the active Omarchy theme", which is the only option
+// that follows a theme switch. Everything else here is fixed on purpose: a user
+// who picks one has decided that red means broken regardless of the wallpaper.
+
+var PALETTES = {
+  traffic: { ok: "#3fb950", warn: "#d29922", bad: "#f85149" },
+  ember:   { ok: "#e3b341", warn: "#db6d28", bad: "#f85149" },
+  ocean:   { ok: "#2dd4bf", warn: "#38bdf8", bad: "#f472b6" },
+  violet:  { ok: "#a78bfa", warn: "#f0abfc", bad: "#fb7185" },
+  mono:    { ok: "#e6edf3", warn: "#8b949e", bad: "#484f58" }
+}
+
+function paletteNames() {
+  var names = ["theme"]
+  for (var name in PALETTES) names.push(name)
+  names.push("custom")
+  return names
+}
+
+var HEX = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
+
+// A custom palette is typed by hand, so a half-finished one is the normal state
+// of the field rather than an error: anything that is not three valid hex
+// values yields null, and the caller keeps the theme colours it already had.
+// Rejecting it silently beats rendering the mosaic in Qt's fallback white.
+function parsePalette(text) {
+  var parts = String(text || "").split(",")
+  if (parts.length !== 3) return null
+
+  var out = []
+  for (var i = 0; i < parts.length; i++) {
+    var value = parts[i].trim()
+    if (!HEX.test(value)) return null
+    out.push(value)
+  }
+
+  return { ok: out[0], warn: out[1], bad: out[2] }
+}
+
+// null means "no palette, use the theme". The panel treats that as its default
+// rather than as a failure, which is also what an unknown name gets.
+function resolvePalette(name, customText) {
+  if (name === "custom") return parsePalette(customText)
+  return PALETTES[name] || null
+}
+
 // --------------------------------------------------------------- metrics
 
 var METRICS = ["cpu", "mem", "memPerc", "net", "count"]
@@ -776,6 +1081,26 @@ function metricList(setting) {
   }
 
   return out
+}
+
+// The settings form has no multi-select, so which metrics rotate is one
+// checkbox per metric — `metricCpu`, `metricMemPerc` and so on. Rotation order
+// is METRICS order rather than the order they were ticked: there is nowhere in
+// a set of checkboxes to express an order, and inventing one from click history
+// would make the widget depend on something the user cannot see.
+function metricFlagKey(name) {
+  return "metric" + name.charAt(0).toUpperCase() + name.slice(1)
+}
+
+function metricListFromFlags(settings) {
+  var chosen = []
+  var source = settings || {}
+
+  for (var i = 0; i < METRICS.length; i++) {
+    if (source[metricFlagKey(METRICS[i])] === true) chosen.push(METRICS[i])
+  }
+
+  return metricList(chosen.join(","))
 }
 
 // No sample yet is not the same as a measurement of zero, and the label must
@@ -1579,16 +1904,30 @@ function containerTuiCommand(kind, container, tail) {
 // Hand a container's log to the default Omarchy coding agent. The heavy lifting
 // (facts, log capture, prompt, picking the agent) lives in bin/, because it is
 // shell work and because it stays runnable by hand.
-function askAgentCommand(scriptPath, container, tail) {
+// The language is passed in rather than left to the script's own environment:
+// the widget's Language setting can be pt on an en_US machine, and a prompt in
+// a language the user did not choose is a prompt they have to translate before
+// they can read the answer.
+function askAgentCommand(scriptPath, container, tail, language) {
   if (!scriptPath || !container) return []
-  return [scriptPath, container.id, container.name, String(Number(tail) || 400)]
+  return [scriptPath, container.id, container.name,
+          String(Number(tail) || 400), agentLanguage(language)]
 }
 
 // A failing stack is usually a failing relationship — the api cannot reach the
 // database — and one container's log is half of that conversation.
-function askAgentStackCommand(scriptPath, group, tail) {
+function askAgentStackCommand(scriptPath, group, tail, language) {
   if (!scriptPath || !group || !group.project || group.loose) return []
-  return [scriptPath, group.project, String(Number(tail) || 200)]
+  return [scriptPath, group.project, String(Number(tail) || 200),
+          agentLanguage(language)]
+}
+
+// The scripts carry English and Portuguese prompts and fall back to English
+// themselves; passing "auto" for anything else lets them read the environment
+// exactly as they do when run by hand.
+function agentLanguage(language) {
+  var name = String(language || "")
+  return name === "en" || name === "pt" ? name : "auto"
 }
 
 // The stack knows where its compose file is; opening it closes the loop after

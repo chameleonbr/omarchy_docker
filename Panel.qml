@@ -81,6 +81,15 @@ Panel {
     return I18n.pressureText(pressure, Docker.formatBytes)
   }
 
+  // The settings screen has a second source of text: `manifest.json` already
+  // carries every field's English label and description, so only Portuguese
+  // lives in I18n. A missing key falls through to the manifest instead of
+  // rendering "settings.label.palette" at someone.
+  function trOr(key, fallback, values) {
+    var epoch = root.languageEpoch
+    return I18n.tOr(key, fallback, values)
+  }
+
   readonly property string monitorName: hostWindow && hostWindow.screen
     ? String(hostWindow.screen.name || "") : ""
 
@@ -93,8 +102,18 @@ Panel {
   // active item, which in a good many themes is a warm gold. Using it made a
   // container that had crashed look exactly like one that was merely unhealthy,
   // and left a reader asking what the gold meant. It meant nothing.
-  readonly property color okColor: foreground
-  readonly property color badColor: Color.urgent
+  //
+  // A chosen palette overrides all three at once. Overriding one of them would
+  // leave the widget speaking two colour languages, and there is no reading of
+  // "green, gold, theme-urgent" that means anything.
+  //
+  // Not called `palette`: QQuickItem has owned a property by that name since
+  // Qt 6, and shadowing it is at best confusing and at worst a load error.
+  readonly property var cellPalette:
+    Docker.resolvePalette(paletteName, paletteCustom)
+
+  readonly property color okColor: cellPalette ? cellPalette.ok : foreground
+  readonly property color badColor: cellPalette ? cellPalette.bad : Color.urgent
 
   // Some themes set `accent` to the foreground colour, which would render a
   // warning identically to a healthy row and collapse three states into two.
@@ -102,11 +121,12 @@ Panel {
   // meeting the error colour halfway: still the theme's own hues, and visibly
   // between "fine" and "broken".
   readonly property bool accentIsDistinct: colorDistance(Color.accent, foreground) > 0.12
-  readonly property color warnColor: accentIsDistinct
+  readonly property color themeWarnColor: accentIsDistinct
     ? Color.accent
     : Qt.rgba((okColor.r + badColor.r) / 2,
               (okColor.g + badColor.g) / 2,
               (okColor.b + badColor.b) / 2, 1)
+  readonly property color warnColor: cellPalette ? cellPalette.warn : themeWarnColor
 
   function colorDistance(left, right) {
     var dr = left.r - right.r
@@ -127,8 +147,200 @@ Panel {
 
   readonly property var filterSettings: ({
     hideProjects: setting("hideProjects", ""),
-    showStopped: setting("showStopped", true) === true
+    showStopped: setting("showStopped", true) === true,
+    stackOrder: root.stackOrder
   })
+  // Popup list only. The mosaic orders itself with stableGroupOrder whatever
+  // this says, because a cell that moves is a cell you have to read.
+  readonly property string stackOrder: String(setting("stackOrder", "failed"))
+  readonly property string paletteName: String(setting("palette", "theme"))
+  readonly property string paletteCustom: String(setting("paletteCustom", ""))
+
+  // ------------------------------------------------- the settings screen
+  //
+  // The screen is built from this plugin's own manifest schema, read back out
+  // of the shell's plugin registry. Keeping a second copy of the field list in
+  // QML would mean a setting could exist in one and not the other, which is
+  // the bug the whole thing is meant to prevent.
+  readonly property string pluginId: moduleName || "avila.ultra-docker"
+  readonly property var pluginRegistry: bar && bar.shell ? bar.shell.pluginRegistry : null
+
+  readonly property var settingsSchema: {
+    // Read the revision so this re-evaluates when a plugin rescan changes the
+    // manifest. Without it the screen would keep rendering the schema that was
+    // loaded at startup.
+    var revision = root.pluginRegistry ? root.pluginRegistry.registryRevision : 0
+    if (!root.pluginRegistry) return []
+    var installed = root.pluginRegistry.installedPlugins || ({})
+    var manifest = installed[root.pluginId]
+    if (!manifest || !manifest.barWidget) return []
+    return manifest.barWidget.schema || []
+  }
+
+  readonly property var settingsSections: Docker.settingsSections(settingsSchema)
+  readonly property int changedSettings:
+    Docker.changedSettingCount(settings || ({}), settingsSchema)
+
+  // Writing goes straight through the registry rather than out to
+  // `omarchy bar set` and back: the bar patches inline settings in place
+  // (BarModel.inlineSettingsDelta) instead of rebuilding widgets, so the value
+  // lands in shell.json and every binding here re-evaluates without the panel
+  // being torn down under the user mid-edit.
+  readonly property bool canWriteSettings: pluginRegistry
+    && typeof pluginRegistry.setBarWidget === "function"
+
+  property bool settingsOpen: false
+  property string settingsError: ""
+
+  // ------------------------------------------------------------ keyboard
+  //
+  // The search field owns every bare keystroke — a letter belongs to the
+  // person typing a filter, not to the panel — so each shortcut here carries a
+  // modifier.
+  //
+  // "Section" means the tabs while the list is up and the setting groups while
+  // the settings screen is. Same gesture, both places: Ctrl+Tab steps through
+  // them, Alt+<n> jumps straight to one.
+  property int settingsSection: 0
+
+  readonly property int sectionCount: settingsOpen
+    ? settingsSections.length : Docker.TABS.length
+
+  readonly property int currentSection: settingsOpen
+    ? settingsSection : Docker.TABS.indexOf(tab)
+
+  function stepSection(delta) {
+    root.goToSection(Docker.nextSection(root.currentSection, root.sectionCount, delta))
+  }
+
+  function goToSection(index) {
+    if (index < 0 || index >= root.sectionCount) return
+
+    if (!root.settingsOpen) {
+      root.tab = Docker.TABS[index]
+      return
+    }
+
+    root.settingsSection = index
+    var block = settingsRepeater.itemAt(index)
+    if (!block) return
+    // Clamped: scrolling past the end leaves the list hanging in empty space
+    // with no way back except the wheel.
+    settingsFlick.contentY = Math.max(0, Math.min(block.y,
+      Math.max(0, settingsFlick.contentHeight - settingsFlick.height)))
+  }
+
+  // One verb in, one thing done. The decision is in Docker.js because this
+  // panel cannot be driven from a test.
+  function handleKey(key, modifiers) {
+    var mods = modifiers || ({})
+    var decision = Docker.keyAction({
+      key: key,
+      shift: mods.shift === true,
+      ctrl: mods.ctrl === true,
+      alt: mods.alt === true,
+      meta: mods.meta === true
+    }, {
+      settingsOpen: root.settingsOpen,
+      hasQuery: root.query !== "",
+      typing: root.typing
+    })
+
+    if (decision.action === "closeSettings") root.settingsOpen = false
+    else if (decision.action === "clearQuery") { search.text = ""; root.takeKeys() }
+    else if (decision.action === "closePanel") root.close()
+    else if (decision.action === "toggleSettings") root.settingsOpen = !root.settingsOpen
+    else if (decision.action === "focusSearch") root.focusSearch()
+    else if (decision.action === "refresh") { if (root.service) root.service.refresh() }
+    else if (decision.action === "nextSection") root.stepSection(1)
+    else if (decision.action === "previousSection") root.stepSection(-1)
+    else if (decision.action === "jumpSection") root.goToSection(decision.index)
+  }
+
+  // Where the keys live.
+  //
+  // Not on the widget and not on the KeyboardPanel item: that panel builds its
+  // content inside a PanelWindow of its own, so a key event rises to the root
+  // of THAT window and stops. A handler attached anywhere outside it never
+  // fires, which is exactly how the first version of this shipped — every
+  // shortcut correct, and none of them reachable.
+  //
+  // `PanelKeyCatcher` is the kit's answer and wraps the content from inside.
+  // Its `Keys.priority: Keys.BeforeItem` is what makes a bare letter a
+  // shortcut at all: it sees the key before whatever has focus does. `blocked`
+  // is the switch that hands the keyboard back while something is being typed
+  // into, and is why every field sets `typing`.
+  readonly property bool typing: search.activeFocus || settingsTyping
+  property bool settingsTyping: false
+
+  function takeKeys() {
+    panelKeys.forceActiveFocus()
+  }
+
+  function focusSearch() {
+    root.settingsOpen = false
+    search.forceActiveFocus()
+  }
+
+  onSettingsOpenChanged: {
+    if (settingsOpen) {
+      settingsSection = 0
+      settingsError = ""
+    }
+    settingsTyping = false
+    // Either way the keys come back to the catcher, or the next keystroke goes
+    // nowhere and the panel looks frozen.
+    if (opened) root.takeKeys()
+  }
+
+  function writeSetting(key, value) {
+    // A shell that does not offer the call is not an error to swallow: every
+    // control would look live and do nothing, which is the exact failure this
+    // plugin has hit before. Say so, and name the command that does work.
+    if (!root.canWriteSettings) {
+      root.settingsError = root.tr("settings.readOnly", { id: root.pluginId })
+      return
+    }
+    var error = root.pluginRegistry.setBarWidget(root.pluginId, key, value, ({}))
+    root.settingsError = error
+      ? root.tr("settings.writeFailed", { error: error }) : ""
+  }
+
+  function resetSetting(field) {
+    if (field) root.writeSetting(String(field.key), field.defaultValue)
+  }
+
+  function resetAllSettings() {
+    var fields = root.settingsSchema
+    for (var i = 0; i < fields.length; i++) {
+      if (!Docker.settingIsDefault(root.settings || ({}), fields[i])) {
+        root.resetSetting(fields[i])
+      }
+    }
+  }
+
+  // The words for one field. English is the manifest's own, which is where it
+  // was written and where it stays accurate.
+  function fieldLabel(field) {
+    return root.trOr("settings.label." + field.key, field.label || field.key)
+  }
+
+  function fieldHelp(field) {
+    return root.trOr("settings.help." + field.key, field.description || "")
+  }
+
+  function fieldOptions(field) {
+    var out = []
+    var options = Docker.optionsOf(field)
+    for (var i = 0; i < options.length; i++) {
+      out.push({
+        value: String(options[i]),
+        label: root.trOr("settings.option." + field.key + "." + options[i],
+                         String(options[i]))
+      })
+    }
+    return out
+  }
   readonly property string groupBy: String(setting("groupBy", "auto"))
   readonly property int cellSize: Math.max(2, Number(setting("cellSize", 4)))
   readonly property int cellGap: Math.max(1, Number(setting("cellGap", 2)))
@@ -136,7 +348,16 @@ Panel {
   readonly property bool groupStacks: setting("groupStacks", true) === true
   readonly property int maxWidth: Math.max(20, Number(setting("maxWidth", 160)))
   readonly property bool pulseRestarting: setting("pulseRestarting", true) === true
-  readonly property var metrics: Docker.metricList(setting("metrics", "cpu,mem"))
+  // Read one by one rather than handing the whole settings object over: the
+  // host injects only the keys the user has changed, so an untouched install
+  // would arrive as an empty object and rotate nothing at all.
+  readonly property var metrics: Docker.metricListFromFlags({
+    metricCpu: setting("metricCpu", true) === true,
+    metricMem: setting("metricMem", true) === true,
+    metricMemPerc: setting("metricMemPerc", false) === true,
+    metricNet: setting("metricNet", false) === true,
+    metricCount: setting("metricCount", false) === true
+  })
   readonly property int metricRotateMs: Math.max(1500, Number(setting("metricRotateMs", 4000)))
   readonly property string dockerUrl: String(setting("dockerUrl", ""))
   readonly property string primaryAction: String(setting("primaryAction", "popup"))
@@ -266,9 +487,22 @@ Panel {
   onVisibleChanged: syncVisibility()
   onOpenedChanged: {
     if (service) service.setPanelOpen(opened)
-    // A filter that survives a close will eventually convince someone their
-    // containers are gone.
-    if (!opened) query = ""
+    if (!opened) {
+      // A filter that survives a close will eventually convince someone their
+      // containers are gone.
+      //
+      // Clear the FIELD, not `query`: the field is what the next open shows,
+      // and `onTextChanged` carries the empty string through to `query`.
+      // Setting `query` alone left the box holding a filter the list was no
+      // longer applying — a search that looked live and did nothing.
+      search.text = ""
+      // And a settings screen that survives one means the next click on the
+      // widget opens the settings instead of the containers. Closing the panel
+      // — by clicking away from it, or any other way — is leaving the settings
+      // too: it is the same gesture people use to back out of them.
+      settingsOpen = false
+      settingsTyping = false
+    }
   }
 
   Component.onDestruction: {
@@ -313,6 +547,20 @@ Panel {
       var widget = root.widgetOnMonitor(monitor)
       if (widget) widget.toggle()
       else root.toggle()
+    }
+
+    // Straight onto the settings screen. A keybinding wants this, and so does
+    // anyone who came to change one thing rather than to look at containers.
+    function settings(): void {
+      var widget = root.widgetOnMonitor(root.monitorName) || root
+      widget.settingsOpen = true
+      widget.open()
+    }
+
+    function settingsOn(monitor: string): void {
+      var widget = root.widgetOnMonitor(monitor) || root
+      widget.settingsOpen = true
+      widget.open()
     }
     function lazydocker(): void { if (root.service) root.service.openLazydocker(null) }
 
@@ -513,7 +761,7 @@ Panel {
     Docker.searchContainers(containers, { view: root.view, query: root.query })
 
   readonly property var visibleGroups: service
-    ? Docker.sortGroups(Docker.groupByProject(visibleContainers)) : []
+    ? Docker.orderGroups(Docker.groupByProject(visibleContainers), root.stackOrder) : []
 
   readonly property bool filtering: query !== "" || view !== "all"
 
@@ -540,15 +788,34 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: search
+    focusTarget: panelKeys
     contentWidth: card.fittedContentWidth(Style.space(660))
     contentHeight: card.fittedContentHeight(shell.implicitHeight, shell.maxPanelHeight)
+
 
     // Inside the panel, filling it. As a child of the bar widget — which is
     // where this lived — the dialog's scrim anchored to an item roughly a
     // hundred pixels wide inside the bar, so the confirmation rendered
     // somewhere nobody could see or click it, and every destructive button
     // silently did nothing.
+    // Somewhere for the keyboard to be. Zero size on purpose: it is a key
+    // dispatcher, not something to look at.
+    //
+    // Wrapping the whole content in it — the usage the component documents —
+    // would buy `Keys.priority: BeforeItem`, which this panel does not need:
+    // focus is moved explicitly, to the search field and back, so the catcher
+    // only ever holds the keyboard when nothing is being typed into.
+    PanelKeyCatcher {
+      id: panelKeys
+      width: 0
+      height: 0
+      blocked: root.typing
+
+      onCloseRequested: root.handleKey("escape")
+      onTabRequested: function(direction) { root.stepSection(direction) }
+      onTextKey: function(text) { root.handleKey(text) }
+    }
+
     ConfirmDialog {
       id: confirmDialog
       anchors.fill: parent
@@ -563,6 +830,369 @@ Panel {
       onCanceled: {
         root.pendingConfirm = null
         confirmDialog.opened = false
+      }
+    }
+
+    // ------------------------------------------------------ settings screen
+    //
+    // On top of the panel, not beside it: the same rule ConfirmDialog learned
+    // the hard way. A full-surface overlay parented to the bar widget anchors
+    // itself to about a hundred pixels of bar, where nobody can see or click
+    // it. It belongs inside the card, filling it.
+    //
+    // Below ConfirmDialog's z, because a confirmation raised FROM this screen
+    // has to land on top of it.
+    Rectangle {
+      id: settingsSurface
+      anchors.fill: parent
+      z: 90
+      color: Color.popups.background
+      opacity: root.settingsOpen ? 1 : 0
+      visible: opacity > 0
+      // No `focus` here. The keys belong to `keyCatcher`, and a focus binding
+      // on this surface quietly took them back the moment the screen opened —
+      // `s` reached the catcher and opened the settings, and then nothing else
+      // did, because the catcher no longer had the keyboard.
+
+      Behavior on opacity { NumberAnimation { duration: 120 } }
+
+      // An opaque surface that still lets clicks and wheel events through to
+      // the list underneath is worse than no overlay: rows react to a pointer
+      // that is over a settings control.
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        acceptedButtons: Qt.AllButtons
+        onWheel: function(wheel) { wheel.accepted = true }
+      }
+
+      // Same shape as the panel's own header, for the same reason: the close
+      // button belongs on the right edge, not wherever the title happens to
+      // end. See the note there.
+      Item {
+        id: settingsHeader
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: Math.max(settingsTitle.implicitHeight, settingsActions.implicitHeight)
+
+        Text {
+          id: settingsTitle
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.tr("settings.title")
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          font.bold: true
+          textFormat: Text.PlainText
+        }
+
+        Text {
+          id: settingsChanged
+          anchors.left: settingsTitle.right
+          anchors.leftMargin: Style.space(8)
+          anchors.right: resetAllButton.left
+          anchors.rightMargin: Style.space(4)
+          anchors.verticalCenter: parent.verticalCenter
+          // How far this install has drifted from the defaults, which is the
+          // one thing you cannot see by scrolling.
+          text: root.changedSettings > 0
+            ? root.tr("settings.changed", { count: root.changedSettings })
+            : root.tr("settings.unchanged")
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+          textFormat: Text.PlainText
+        }
+
+        // Next to the count it undoes, and clear of the close button.
+        //
+        // Both were in the action row, so once that row was anchored to the
+        // right edge they became neighbours in the corner people aim at to
+        // leave a screen. The confirmation still stands between the two, so
+        // this is a margin of comfort rather than a fix for a bug — but the
+        // button also just belongs beside the number it acts on.
+        PanelActionButton {
+          id: resetAllButton
+          anchors.right: settingsActions.left
+          anchors.rightMargin: Style.space(20)
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: "󰑏"
+          tooltipText: root.tr("settings.resetAll")
+          foreground: root.dim
+          hoverColor: root.foreground
+          enabled: root.changedSettings > 0
+          opacity: enabled ? 1 : 0.35
+          onClicked: root.askConfirm(
+            root.tr("settings.resetAllConfirm", { count: root.changedSettings }),
+            root.tr("settings.resetAll"),
+            function() { root.resetAllSettings() })
+        }
+
+        Row {
+          id: settingsActions
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(2)
+
+          PanelActionButton {
+            iconText: "󰅖"
+            tooltipText: root.tr("settings.close")
+            foreground: root.dim
+            hoverColor: root.foreground
+            onClicked: root.settingsOpen = false
+          }
+        }
+      }
+
+      // Said once, where someone looking for it will be. A shortcut nobody is
+      // told about is a shortcut nobody has.
+      Text {
+        id: settingsKeys
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: settingsHeader.bottom
+        anchors.topMargin: Style.space(4)
+        text: root.tr("settings.keys", { count: root.sectionCount })
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+      }
+
+      Text {
+        id: settingsErrorText
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: settingsKeys.bottom
+        anchors.topMargin: visible ? Style.space(8) : 0
+        visible: root.settingsError !== ""
+        text: root.settingsError
+        color: root.badColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.Wrap
+        // Carries a message from the registry, which quotes ids that came
+        // from a manifest. AutoText would parse a crafted one as rich text.
+        textFormat: Text.PlainText
+      }
+
+      Flickable {
+        id: settingsFlick
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: settingsErrorText.visible
+          ? settingsErrorText.bottom : settingsKeys.bottom
+        anchors.topMargin: Style.space(10)
+        anchors.bottom: parent.bottom
+        clip: true
+        contentHeight: settingsColumn.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
+
+        Column {
+          id: settingsColumn
+          width: parent.width
+          spacing: Style.space(14)
+
+          Repeater {
+            id: settingsRepeater
+            model: root.settingsSections
+
+            Column {
+              id: sectionBlock
+              required property var modelData
+              required property int index
+
+              width: settingsColumn.width
+              spacing: Style.space(8)
+
+              PanelSectionHeader {
+                text: root.tr("settings.section." + sectionBlock.modelData.key)
+                // The one you jumped to, said quietly. Without it Ctrl+Tab
+                // scrolls and nothing tells you where it landed.
+                foreground: root.settingsSection === sectionBlock.index
+                  ? root.foreground : root.dim
+                fontFamily: root.fontFamily
+              }
+
+              Repeater {
+                model: sectionBlock.modelData.fields
+
+                Item {
+                  id: fieldRow
+                  required property var modelData
+
+                  readonly property var field: fieldRow.modelData
+                  readonly property var current:
+                    Docker.settingValue(root.settings || ({}), fieldRow.field)
+                  readonly property bool isDefault:
+                    Docker.settingIsDefault(root.settings || ({}), fieldRow.field)
+                  readonly property string help: root.fieldHelp(fieldRow.field)
+
+                  function commit(value) {
+                    root.writeSetting(String(fieldRow.field.key),
+                                      Docker.coerceSetting(fieldRow.field, value))
+                  }
+
+                  width: sectionBlock.width
+                  implicitHeight: Math.max(fieldTexts.implicitHeight,
+                                           controlLoader.implicitHeight)
+                  height: implicitHeight
+
+                  Column {
+                    id: fieldTexts
+                    anchors.left: parent.left
+                    anchors.right: resetSlot.left
+                    anchors.rightMargin: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(2)
+
+                    Text {
+                      width: parent.width
+                      text: root.fieldLabel(fieldRow.field)
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      wrapMode: Text.Wrap
+                      textFormat: Text.PlainText
+                    }
+
+                    Text {
+                      // No `height` binding. A wrapping Text derives its
+                      // implicitHeight from its own layout, so height:
+                      // implicitHeight is a loop — and the Column already
+                      // skips a child that is not visible.
+                      width: parent.width
+                      visible: fieldRow.help !== ""
+                      text: fieldRow.help
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.Wrap
+                      textFormat: Text.PlainText
+                    }
+                  }
+
+                  // Reset sits left of the control rather than right of it, so
+                  // the controls stay on one edge and the column still reads as
+                  // a column when only some rows carry a reset.
+                  //
+                  // Its slot is always there, whether or not the button is. The
+                  // help text is anchored to the slot, so a row that goes back
+                  // to its default does not rewrap its own description under
+                  // the pointer — and a description never runs under the arrow,
+                  // which is what it did when the button was the anchor.
+                  Item {
+                    id: resetSlot
+                    anchors.right: controlHolder.left
+                    anchors.rightMargin: Style.space(4)
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(22)
+                    height: width
+
+                    PanelActionButton {
+                      anchors.centerIn: parent
+                      visible: !fieldRow.isDefault
+                      iconText: "󰕌"
+                      tooltipText: root.tr("settings.reset")
+                      foreground: root.dim
+                      hoverColor: root.foreground
+                      onClicked: root.resetSetting(fieldRow.field)
+                    }
+                  }
+
+                  Item {
+                    id: controlHolder
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(190)
+                    height: controlLoader.implicitHeight
+
+                    Loader {
+                      id: controlLoader
+                      anchors.right: parent.right
+                      anchors.verticalCenter: parent.verticalCenter
+                      sourceComponent: {
+                        var kind = Docker.settingControl(fieldRow.field)
+                        if (kind === "toggle") return toggleControl
+                        if (kind === "number") return numberControl
+                        if (kind === "choice") return choiceControl
+                        return textControl
+                      }
+                    }
+
+                    Component {
+                      id: toggleControl
+                      ToggleSwitch {
+                        checked: fieldRow.current === true
+                        foreground: root.foreground
+                        accent: root.warnColor
+                        onToggled: fieldRow.commit(!checked)
+                      }
+                    }
+
+                    Component {
+                      id: numberControl
+                      NumberField {
+                        value: Number(fieldRow.current)
+                        from: fieldRow.field.min !== undefined
+                          ? fieldRow.field.min : -2147483647
+                        to: fieldRow.field.max !== undefined
+                          ? fieldRow.field.max : 2147483647
+                        stepSize: fieldRow.field.step !== undefined
+                          ? fieldRow.field.step : 1
+                        foreground: root.foreground
+                        accent: root.warnColor
+                        fontFamily: root.fontFamily
+                        onModified: function(next) { fieldRow.commit(next) }
+                      }
+                    }
+
+                    Component {
+                      id: choiceControl
+                      Dropdown {
+                        width: Style.space(190)
+                        showLabel: false
+                        value: String(fieldRow.current)
+                        options: root.fieldOptions(fieldRow.field)
+                        foreground: root.foreground
+                        accent: root.warnColor
+                        fontFamily: root.fontFamily
+                        onChanged: function(next) { fieldRow.commit(next) }
+                      }
+                    }
+
+                    Component {
+                      id: textControl
+                      TextField {
+                        width: Style.space(190)
+                        text: String(fieldRow.current === undefined
+                          ? "" : fieldRow.current)
+                        foreground: root.foreground
+                        accent: root.warnColor
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        // On editingFinished, never on every keystroke: each
+                        // write rewrites shell.json and re-reads it back into
+                        // every widget on every monitor.
+                        onEditingFinished: fieldRow.commit(text)
+                        // While this has the cursor, `s` is the letter s.
+                        onActiveFocusChanged: root.settingsTyping = activeFocus
+                        Keys.onEscapePressed: function(event) {
+                          root.takeKeys()
+                          event.accepted = true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -595,37 +1225,53 @@ Panel {
 
       // ------------------------------------------------------- header
 
-      Row {
+      // An Item, not a Row. In a Row the actions sit wherever the text before
+      // them happens to end, so the buttons only reached the right edge if the
+      // count text was given exactly the leftover width — which it was, by a
+      // guessed constant, and so they never quite did. Anchoring the actions to
+      // the right edge makes it exact and drops the constant.
+      Item {
         id: headerRow
         width: parent.width
-        spacing: Style.space(8)
+        height: Math.max(headerTitle.implicitHeight, headerActions.implicitHeight)
 
-        Rectangle {
+        Row {
+          id: headerTitle
+          anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
-          width: Style.space(7)
-          height: Style.space(7)
-          radius: width / 2
-          color: root.daemonOk
-            ? (root.summary.worst === "bad" ? (root.badColor)
-              : (root.summary.worst === "warn" ? Color.accent : root.foreground))
-            : (root.badColor)
+          spacing: Style.space(8)
+
+          Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(7)
+            height: Style.space(7)
+            radius: width / 2
+            color: root.daemonOk
+              ? (root.summary.worst === "bad" ? (root.badColor)
+                : (root.summary.worst === "warn" ? root.warnColor : root.foreground))
+              : (root.badColor)
+          }
+
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            // The plugin's name, with the engine appended only when it is not
+            // the expected one: "Podman" is worth knowing at a glance, "Docker"
+            // is what everyone already assumes.
+            text: root.service && root.service.engineName !== "docker"
+              ? "Ultra Docker · " + root.service.engineLabel
+              : "Ultra Docker"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
         }
 
         Text {
-          anchors.verticalCenter: parent.verticalCenter
-          // The plugin's name, with the engine appended only when it is not
-          // the expected one: "Podman" is worth knowing at a glance, "Docker"
-          // is what everyone already assumes.
-          text: root.service && root.service.engineName !== "docker"
-            ? "Ultra Docker · " + root.service.engineLabel
-            : "Ultra Docker"
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-          font.bold: true
-        }
-
-        Text {
+          anchors.left: headerTitle.right
+          anchors.leftMargin: Style.space(8)
+          anchors.right: headerActions.left
+          anchors.rightMargin: Style.space(8)
           anchors.verticalCenter: parent.verticalCenter
           // While a filter is on, the count says how much is hidden — a
           // filtered list must never look like a machine that lost containers.
@@ -640,12 +1286,12 @@ Panel {
           color: root.daemonOk ? root.dim : (root.badColor)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          width: parent.width - headerActions.implicitWidth - Style.space(140)
           elide: Text.ElideRight
         }
 
         Row {
           id: headerActions
+          anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.space(2)
 
@@ -692,6 +1338,14 @@ Panel {
             foreground: root.dim
             hoverColor: root.foreground
             onClicked: if (root.service) root.service.openLazydocker(null, root.monitorName)
+          }
+
+          PanelActionButton {
+            iconText: "󰒓"
+            tooltipText: root.tr("settings.tip.settings")
+            foreground: root.settingsOpen ? Color.accent : root.dim
+            hoverColor: root.foreground
+            onClicked: root.settingsOpen = !root.settingsOpen
           }
         }
       }
@@ -784,9 +1438,19 @@ Panel {
           id: search
           anchors.verticalCenter: parent.verticalCenter
           width: parent.width - (chips.visible ? chips.implicitWidth + Style.space(6) : 0)
-          placeholderText: root.tr("search.placeholder")
+          // Said where someone will read it: the field you are not typing in
+          // is the best place to say which key gets you into it.
+          placeholderText: activeFocus
+            ? root.tr("search.placeholder") : root.tr("keys.hint")
           foreground: root.foreground
           onTextChanged: root.query = text
+          // Both ways out of the field, back to command mode. Escape keeps the
+          // filter — a second Escape is what clears it.
+          Keys.onEscapePressed: function(event) {
+            root.takeKeys()
+            event.accepted = true
+          }
+          onAccepted: root.takeKeys()
         }
 
         Row {
@@ -841,14 +1505,21 @@ Panel {
       Flickable {
         id: flick
         width: parent.width
-        // What is left, not a fixed cap.
+        // What is left — all of it, always.
         //
         // With a fixed cap the column could grow past what the screen allows,
         // the panel capped itself, and the last row — the footer — ended up
         // outside it. Measuring the fixed blocks and giving the list the
         // remainder makes the list absorb the shortfall instead, so the footer
         // is always the thing that fits.
-        height: Math.max(Style.space(90), Math.min(list.implicitHeight, shell.roomForList))
+        //
+        // Taking the remainder rather than `min(content, remainder)` is what
+        // makes the panel one size. Sized to its content, a search that matched
+        // nothing collapsed the whole panel to a sliver — and opening the
+        // settings inside that sliver gave a full settings screen a few rows of
+        // room. The height of a panel should say nothing about how many
+        // containers matched a filter.
+        height: shell.roomForList
         visible: root.daemonOk
         contentWidth: width
         contentHeight: list.implicitHeight
@@ -1156,7 +1827,7 @@ Panel {
                     radius: width / 2
                     color: stackBlock.modelData.worst === "bad"
                       ? (root.badColor)
-                      : (stackBlock.modelData.worst === "warn" ? Color.accent : root.foreground)
+                      : (stackBlock.modelData.worst === "warn" ? root.warnColor : root.foreground)
                     opacity: stackBlock.modelData.worst === "idle" ? 0.35 : 1
                   }
 
@@ -1277,7 +1948,7 @@ Panel {
                     modelData.cell === "bad" || modelData.cell === "warn"
                   readonly property color stateColor: modelData.cell === "bad"
                     ? (root.badColor)
-                    : (modelData.cell === "warn" ? Color.accent : root.foreground)
+                    : (modelData.cell === "warn" ? root.warnColor : root.foreground)
 
                   width: list.width
                   height: containerRow.implicitHeight + Style.space(9)

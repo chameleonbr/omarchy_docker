@@ -573,6 +573,397 @@ check("aggregating the real fixtures produces sane totals", () => {
   assert.ok(total.memPerc > 0 && total.memPerc <= 100)
 })
 
+// -------------------------------------------------------------- keyboard
+
+const press = (key, mods) => Object.assign({ key: key }, mods || {})
+
+check("Escape steps back out of one thing at a time", () => {
+  // Closing the whole panel while a filter is still typed loses the filter and
+  // the panel at once, and reopening gives back neither.
+  assert.strictEqual(
+    keyAction(press("escape"), { settingsOpen: true, hasQuery: true }).action,
+    "closeSettings")
+  assert.strictEqual(
+    keyAction(press("escape"), { settingsOpen: false, hasQuery: true }).action,
+    "clearQuery")
+  assert.strictEqual(
+    keyAction(press("escape"), { settingsOpen: false, hasQuery: false }).action,
+    "closePanel")
+
+  // It is also how you get out of a text field, so it is the one key that
+  // still means something while typing.
+  assert.strictEqual(
+    keyAction(press("escape"), { typing: true, hasQuery: true }).action, "clearQuery")
+})
+
+check("a bare letter is a shortcut, because the panel opens in command mode", () => {
+  assert.strictEqual(keyAction(press("f"), {}).action, "focusSearch")
+  // Shift on a letter is a capital, not a different shortcut.
+  assert.strictEqual(keyAction(press("S"), {}).action, "toggleSettings")
+  assert.strictEqual(keyAction(press("F", { shift: true }), {}).action, "focusSearch")
+  assert.strictEqual(keyAction(press("/"), {}).action, "focusSearch")
+  assert.strictEqual(keyAction(press("s"), {}).action, "toggleSettings")
+  assert.strictEqual(keyAction(press(","), {}).action, "toggleSettings")
+  assert.strictEqual(keyAction(press("r"), {}).action, "refresh")
+
+  // s toggles from both sides; there is no separate key to close the settings.
+  assert.strictEqual(keyAction(press("s"), { settingsOpen: true }).action, "toggleSettings")
+})
+
+check("a letter being typed is a letter", () => {
+  // The focus model already keeps shortcuts off a focused field — they hang on
+  // the catcher, which has no focus while a field does. This is the second
+  // lock: a stray focus state would otherwise turn every letter of a search
+  // into a command, which is the worst way for this to fail.
+  for (const key of ["f", "s", "r", "/", ",", "tab", "backtab", "1"]) {
+    assert.strictEqual(keyAction(press(key), { typing: true }).action, "", key)
+  }
+})
+
+check("a modified key belongs to the compositor, not to us", () => {
+  for (const mod of ["ctrl", "alt", "meta"]) {
+    for (const key of ["f", "s", "r", "tab", "1"]) {
+      const mods = {}
+      mods[mod] = true
+      assert.strictEqual(keyAction(press(key, mods), {}).action, "", mod + "+" + key)
+    }
+  }
+
+  // Shift is ours: it is what turns Tab around.
+  assert.strictEqual(
+    keyAction(press("tab", { shift: true }), {}).action, "previousSection")
+})
+
+check("Tab steps sections and Shift sends it backwards", () => {
+  assert.strictEqual(keyAction(press("tab"), {}).action, "nextSection")
+  assert.strictEqual(keyAction(press("tab", { shift: true }), {}).action, "previousSection")
+  // Shift+Tab arrives as Backtab on its own on most stacks.
+  assert.strictEqual(keyAction(press("backtab"), {}).action, "previousSection")
+  assert.strictEqual(
+    keyAction(press("backtab", { shift: true }), {}).action, "previousSection")
+})
+
+check("a digit jumps straight to a section, counting from one", () => {
+  // What the user reads as 1 is index 0. Getting this off by one sends every
+  // jump to the wrong place, and the shortcut looks like it half works.
+  assert.deepStrictEqual(
+    keyAction(press("1"), {}), { action: "jumpSection", index: 0 })
+  assert.deepStrictEqual(
+    keyAction(press("5"), {}), { action: "jumpSection", index: 4 })
+})
+
+check("stepping through sections wraps in both directions", () => {
+  // JS % keeps the sign of the left operand, so a plain (i - 1) % count lands
+  // on -1 at the first item and the shortcut dies at the top of the list.
+  assert.strictEqual(nextSection(0, 4, -1), 3)
+  assert.strictEqual(nextSection(3, 4, 1), 0)
+  assert.strictEqual(nextSection(1, 4, 1), 2)
+  assert.strictEqual(nextSection(1, 4, -1), 0)
+
+  // A tab that is not in the list reads as -1 from indexOf; start from the top
+  // rather than from nowhere.
+  assert.strictEqual(nextSection(-1, 4, 1), 1)
+  assert.strictEqual(nextSection(-1, 4, -1), 3)
+
+  // Nothing to step through is not a crash.
+  assert.strictEqual(nextSection(0, 0, 1), 0)
+})
+
+check("every verb the panel carries out is one the decision can return", () => {
+  const returned = new Set([
+    keyAction(press("escape"), { settingsOpen: true }).action,
+    keyAction(press("escape"), { hasQuery: true }).action,
+    keyAction(press("escape"), {}).action,
+    keyAction(press("s"), {}).action,
+    keyAction(press("f"), {}).action,
+    keyAction(press("r"), {}).action,
+    keyAction(press("tab"), {}).action,
+    keyAction(press("backtab"), {}).action,
+    keyAction(press("1"), {}).action,
+    keyAction(press("x"), {}).action
+  ])
+
+  for (const action of returned) assert.ok(KEY_ACTIONS.indexOf(action) >= 0, action)
+  assert.strictEqual(returned.size, KEY_ACTIONS.length, "every verb is reachable")
+})
+
+check("the panel dispatches on exactly the verbs Docker.js defines", () => {
+  const panel = fs.readFileSync(__dirname + "/Panel.qml", "utf8")
+  const dispatched = panel.match(/decision\.action === "(\w+)"/g) || []
+  const names = dispatched.map(m => m.match(/"(\w+)"/)[1]).sort()
+
+  assert.deepStrictEqual(names, KEY_ACTIONS.filter(a => a !== "").sort())
+})
+
+// -------------------------------------------------------------- settings
+
+const SCHEMA = JSON.parse(fs.readFileSync(__dirname + "/manifest.json", "utf8"))
+  .barWidget.schema
+
+check("the settings screen is built from the manifest, not a second list", () => {
+  const filed = settingsSections(SCHEMA)
+  const shown = filed.flatMap(section => section.fields.map(f => f.key))
+
+  // Every key in the schema reaches the screen exactly once. A settings screen
+  // that silently omits a setting is the bug this whole thing exists to avoid.
+  assert.deepStrictEqual(shown.slice().sort(), SCHEMA.map(f => f.key).sort())
+  assert.strictEqual(new Set(shown).size, shown.length, "no key appears twice")
+})
+
+check("a key nobody filed lands in a section instead of vanishing", () => {
+  const withNew = SCHEMA.concat([{ key: "brandNew", type: "boolean" }])
+  const sections = settingsSections(withNew)
+  const last = sections[sections.length - 1]
+
+  assert.strictEqual(last.key, "other")
+  assert.deepStrictEqual(last.fields.map(f => f.key), ["brandNew"])
+
+  // ...and today nothing is unfiled, so that section does not exist. This is
+  // the check that fails when a key is added to the manifest and to no section.
+  assert.ok(!settingsSections(SCHEMA).some(s => s.key === "other"),
+    "every manifest key should be filed into a named section")
+})
+
+check("a section naming a key the schema does not have is skipped", () => {
+  const trimmed = SCHEMA.filter(f => f.key !== "palette")
+  const look = settingsSections(trimmed).find(s => s.key === "look")
+
+  assert.ok(look.fields.every(f => f.key !== "palette"))
+  assert.ok(look.fields.length > 0)
+})
+
+check("an array-like schema is still a schema", () => {
+  // What the shell's plugin registry hands over has crossed the QML boundary,
+  // and Array.isArray says false for it. Trusting isArray rendered every
+  // dropdown as a plain text box, with no way to discover the other choices.
+  const arrayLike = { length: 2, 0: SCHEMA[0], 1: SCHEMA[1] }
+
+  assert.strictEqual(settingsSections(arrayLike).length > 0, true)
+  assert.strictEqual(changedSettingCount({}, arrayLike), 0)
+  assert.deepStrictEqual(
+    optionsOf({ options: { length: 2, 0: "a", 1: "b" } }), ["a", "b"])
+  assert.deepStrictEqual(optionsOf({}), [])
+  assert.deepStrictEqual(optionsOf(null), [])
+})
+
+check("each field gets the control its type calls for", () => {
+  assert.strictEqual(settingControl({ type: "boolean" }), "toggle")
+  assert.strictEqual(settingControl({ type: "integer" }), "number")
+  assert.strictEqual(settingControl({ type: "string", options: ["a", "b"] }), "choice")
+  assert.strictEqual(settingControl({ type: "string" }), "text")
+  assert.strictEqual(settingControl({ type: "string", options: [] }), "text")
+  assert.strictEqual(settingControl(null), "text")
+
+  // Spot-check against the real manifest, where getting this wrong is visible.
+  const byKey = key => SCHEMA.find(f => f.key === key)
+  assert.strictEqual(settingControl(byKey("palette")), "choice")
+  assert.strictEqual(settingControl(byKey("paletteCustom")), "text")
+  assert.strictEqual(settingControl(byKey("metricCpu")), "toggle")
+  assert.strictEqual(settingControl(byKey("cellSize")), "number")
+})
+
+check("a value not set is the manifest default, not blank", () => {
+  const field = { key: "cellSize", type: "integer", defaultValue: 4 }
+
+  assert.strictEqual(settingValue({}, field), 4)
+  assert.strictEqual(settingValue(null, field), 4)
+  assert.strictEqual(settingValue({ cellSize: null }, field), 4)
+  assert.strictEqual(settingValue({ cellSize: 9 }, field), 9)
+  // Zero and false are values, not absences.
+  assert.strictEqual(settingValue({ cellSize: 0 }, field), 0)
+  assert.strictEqual(settingValue({ x: false }, { key: "x", defaultValue: true }), false)
+})
+
+check("a value out of range is clamped before it is stored, not after", () => {
+  // Storing it raw and clamping on every read leaves the screen showing one
+  // number and the widget using another.
+  const field = { key: "cellSize", type: "integer", min: 2, max: 14, defaultValue: 4 }
+
+  assert.strictEqual(coerceSetting(field, 99), 14)
+  assert.strictEqual(coerceSetting(field, -5), 2)
+  assert.strictEqual(coerceSetting(field, "7"), 7)
+  assert.strictEqual(coerceSetting(field, 7.6), 8)
+  assert.strictEqual(coerceSetting(field, "nonsense"), 4, "falls back to the default")
+})
+
+check("a dropdown never stores a value it cannot show back", () => {
+  const field = { key: "palette", type: "string",
+                  options: ["theme", "ocean"], defaultValue: "theme" }
+
+  assert.strictEqual(coerceSetting(field, "ocean"), "ocean")
+  assert.strictEqual(coerceSetting(field, "chartreuse"), "theme")
+
+  // A free text field takes whatever it is given.
+  assert.strictEqual(
+    coerceSetting({ key: "hideProjects", type: "string", defaultValue: "" }, "a,b"), "a,b")
+
+  // Booleans are booleans, not the string "true" a hand-edited config holds.
+  const toggle = { key: "metricCpu", type: "boolean", defaultValue: true }
+  assert.strictEqual(coerceSetting(toggle, true), true)
+  assert.strictEqual(coerceSetting(toggle, "true"), false)
+  assert.strictEqual(coerceSetting(toggle, 1), false)
+})
+
+check("changed counts what differs from the default, not what is written", () => {
+  const schema = [
+    { key: "palette", type: "string", options: ["theme", "ocean"], defaultValue: "theme" },
+    { key: "metricCpu", type: "boolean", defaultValue: true },
+    { key: "cellSize", type: "integer", min: 2, max: 14, defaultValue: 4 }
+  ]
+
+  assert.strictEqual(changedSettingCount({}, schema), 0)
+  // `omarchy bar set` writes the default happily; a reset button offered for
+  // that row would do nothing when pressed.
+  assert.strictEqual(changedSettingCount({ palette: "theme", metricCpu: true }, schema), 0)
+  assert.strictEqual(changedSettingCount({ palette: "ocean" }, schema), 1)
+  assert.strictEqual(
+    changedSettingCount({ palette: "ocean", cellSize: 6, metricCpu: false }, schema), 3)
+
+  assert.strictEqual(settingIsDefault({}, schema[0]), true)
+  assert.strictEqual(settingIsDefault({ palette: "ocean" }, schema[0]), false)
+  // Out of range on disk still reads as the value it will actually be used at.
+  assert.strictEqual(settingIsDefault({ cellSize: 4 }, schema[2]), true)
+})
+
+check("every section the screen can show has a title in both languages", () => {
+  const keys = SETTINGS_SECTIONS.map(s => s.key).concat(["other"])
+
+  for (const lang of ["en", "pt"]) {
+    for (const key of keys) {
+      assert.ok(STRINGS[lang]["settings.section." + key], lang + " " + key)
+    }
+  }
+})
+
+// ------------------------------------------------------------- palette
+
+check("a named palette is three colours, and only three", () => {
+  for (const name in PALETTES) {
+    const palette = resolvePalette(name, "")
+    assert.deepStrictEqual(Object.keys(palette).sort(), ["bad", "ok", "warn"], name)
+    for (const key in palette) {
+      assert.ok(/^#[0-9a-f]{6}$/i.test(palette[key]), name + "." + key)
+    }
+    // Three states that render identically are two states.
+    assert.notStrictEqual(palette.ok, palette.warn, name)
+    assert.notStrictEqual(palette.warn, palette.bad, name)
+    assert.notStrictEqual(palette.ok, palette.bad, name)
+  }
+})
+
+check("theme is not a palette, and neither is a name we do not have", () => {
+  // null means "keep the colours derived from the active Omarchy theme", which
+  // is the default rather than a failure.
+  assert.strictEqual(resolvePalette("theme", ""), null)
+  assert.strictEqual(resolvePalette("", ""), null)
+  assert.strictEqual(resolvePalette("solarized", ""), null)
+})
+
+check("a half-typed custom palette keeps the theme rather than rendering white", () => {
+  assert.deepStrictEqual(
+    resolvePalette("custom", "#3fb950,#d29922,#f85149"),
+    { ok: "#3fb950", warn: "#d29922", bad: "#f85149" })
+  assert.deepStrictEqual(
+    resolvePalette("custom", " #fff , #abc , #123456 "),
+    { ok: "#fff", warn: "#abc", bad: "#123456" }, "short form and spaces")
+
+  assert.strictEqual(resolvePalette("custom", ""), null, "empty")
+  assert.strictEqual(resolvePalette("custom", "#fff,#abc"), null, "two of three")
+  assert.strictEqual(resolvePalette("custom", "#fff,#abc,#123,#456"), null, "four")
+  assert.strictEqual(resolvePalette("custom", "#fff,#abc,#12"), null, "not a hex length")
+  assert.strictEqual(resolvePalette("custom", "red,green,blue"), null, "names are not hex")
+  assert.strictEqual(resolvePalette("custom", "#fff,#abc,#zzzzzz"), null, "not hex digits")
+  assert.strictEqual(resolvePalette("custom", null), null)
+})
+
+check("the palette names offered are the ones that resolve", () => {
+  const names = paletteNames()
+
+  assert.strictEqual(names[0], "theme", "the default comes first")
+  assert.strictEqual(names[names.length - 1], "custom", "the escape hatch comes last")
+
+  for (const name of names) {
+    if (name === "theme" || name === "custom") continue
+    assert.ok(resolvePalette(name, ""), name + " resolves")
+  }
+})
+
+// --------------------------------------------------------- stack order
+
+check("stacks sort three ways, and every one of them is stable", () => {
+  const groups = groupByProject(parsePs(psFixture))
+  const projects = order => orderGroups(groups, order).map(g => g.project)
+
+  const byName = projects("name")
+  const loose = byName[byName.length - 1]
+  assert.ok(loose.indexOf("loose") >= 0, "loose containers stay last in every order")
+
+  const alphabetical = byName.slice(0, -1)
+  assert.deepStrictEqual(alphabetical, alphabetical.slice().sort())
+
+  for (const order of STACK_ORDERS) {
+    const once = projects(order)
+    assert.deepStrictEqual(projects(order), once, order + " is deterministic")
+    assert.deepStrictEqual(once.slice().sort(), byName.slice().sort(),
+      order + " keeps every stack")
+    assert.strictEqual(once[once.length - 1], loose, order + " keeps loose last")
+  }
+
+  // An unknown order is the default, not an empty list.
+  assert.deepStrictEqual(projects("nonsense"), projects("failed"))
+})
+
+check("running first and failed first answer different questions", () => {
+  // `alpha` is entirely down and every container in it exited with an error;
+  // `zed` is up and fine. The two orders disagree about which matters more,
+  // which is exactly why the setting exists.
+  const groups = [
+    { project: "zed", loose: false, running: 2, total: 2, worst: "ok" },
+    { project: "alpha", loose: false, running: 0, total: 3, worst: "bad" },
+    { project: "(loose)", loose: true, running: 1, total: 1, worst: "bad" }
+  ]
+
+  assert.deepStrictEqual(
+    orderGroups(groups, "running").map(g => g.project),
+    ["zed", "alpha", "(loose)"], "up first, down after")
+
+  assert.deepStrictEqual(
+    orderGroups(groups, "failed").map(g => g.project),
+    ["alpha", "zed", "(loose)"], "broken first, whether or not it is up")
+
+  assert.deepStrictEqual(
+    orderGroups(groups, "name").map(g => g.project),
+    ["alpha", "zed", "(loose)"], "alphabetical, and loose is still last")
+})
+
+check("running first ranks by whether anything is up, not by how much", () => {
+  const groups = [
+    { project: "zed", loose: false, running: 9, total: 9, worst: "ok" },
+    { project: "beta", loose: false, running: 1, total: 4, worst: "warn" }
+  ]
+
+  // One running container is enough to be "on". Sorting by the count instead
+  // would reshuffle the list every time a stack scaled.
+  assert.deepStrictEqual(
+    orderGroups(groups, "running").map(g => g.project), ["beta", "zed"])
+})
+
+check("the mosaic ignores the stack order setting", () => {
+  // Cells are found by position. One that moves when a container restarts
+  // destroys the only thing the mosaic is for, so stableGroupOrder is what it
+  // uses whatever the popup is set to.
+  const groups = groupByProject(parsePs(psFixture))
+
+  assert.deepStrictEqual(
+    stableGroupOrder(groups).map(g => g.project),
+    orderGroups(groups, "name").map(g => g.project))
+
+  const mosaic = planMosaic(parsePs(psFixture), {
+    groupBy: "stack", heightPx: 26, maxWidthPx: 400
+  })
+  assert.ok(mosaic.cells.length > 0)
+})
+
 // ------------------------------------------------------------- metrics
 
 check("metric list parses and rejects unknown names", () => {
@@ -581,6 +972,28 @@ check("metric list parses and rejects unknown names", () => {
   assert.deepStrictEqual(metricList("cpu,bogus,cpu"), ["cpu"], "unknown and duplicate dropped")
   assert.deepStrictEqual(metricList(""), [], "empty hides the label")
   assert.deepStrictEqual(metricList(undefined), ["cpu", "mem"], "default")
+})
+
+check("which metrics rotate comes from one checkbox each", () => {
+  assert.deepStrictEqual(
+    metricListFromFlags({ metricCpu: true, metricMem: true }), ["cpu", "mem"])
+
+  // METRICS order, not the order the keys happen to be written in: a set of
+  // checkboxes has nowhere to express an order.
+  assert.deepStrictEqual(
+    metricListFromFlags({ metricCount: true, metricCpu: true }), ["cpu", "count"])
+
+  assert.deepStrictEqual(metricListFromFlags({}), [], "nothing ticked hides the label")
+  assert.deepStrictEqual(metricListFromFlags(null), [])
+  assert.deepStrictEqual(
+    metricListFromFlags({ metricCpu: "yes", metricBogus: true }), [],
+    "only a real boolean counts, and an unknown key is not a metric")
+
+  for (const name of METRICS) {
+    const flags = {}
+    flags[metricFlagKey(name)] = true
+    assert.deepStrictEqual(metricListFromFlags(flags), [name], name)
+  }
 })
 
 check("a missing sample reads as an em dash, never as zero", () => {
@@ -1489,8 +1902,8 @@ check("attaching does not mutate the images it was given", () => {
 check("a stack handoff names the stack, not its containers", () => {
   const group = { project: "web-shop", loose: false }
   assert.deepStrictEqual(
-    askAgentStackCommand("/plugin/bin/ask-stack", group, 200),
-    ["/plugin/bin/ask-stack", "web-shop", "200"])
+    askAgentStackCommand("/plugin/bin/ask-stack", group, 200, "pt"),
+    ["/plugin/bin/ask-stack", "web-shop", "200", "pt"])
 })
 
 check("containers outside compose have no stack to hand over", () => {
@@ -1498,6 +1911,44 @@ check("containers outside compose have no stack to hand over", () => {
     askAgentStackCommand("/x", { project: "(loose)", loose: true }, 200), [])
   assert.deepStrictEqual(askAgentStackCommand("/x", null, 200), [])
   assert.deepStrictEqual(askAgentStackCommand("", { project: "a", loose: false }, 200), [])
+})
+
+check("the handoff carries the language the widget is set to", () => {
+  const container = { id: "abc", name: "web-shop-api-1" }
+
+  assert.deepStrictEqual(
+    askAgentCommand("/bin/ask", container, 400, "pt"),
+    ["/bin/ask", "abc", "web-shop-api-1", "400", "pt"])
+  assert.deepStrictEqual(
+    askAgentCommand("/bin/ask", container, 400, "en"),
+    ["/bin/ask", "abc", "web-shop-api-1", "400", "en"])
+
+  // Anything the scripts do not carry becomes `auto`, which is them reading
+  // the environment exactly as they do when run by hand.
+  assert.strictEqual(askAgentCommand("/bin/ask", container, 400, "de")[4], "auto")
+  assert.strictEqual(askAgentCommand("/bin/ask", container, 400, "")[4], "auto")
+  assert.strictEqual(askAgentCommand("/bin/ask", container, 400)[4], "auto")
+  assert.strictEqual(
+    askAgentStackCommand("/x", { project: "a", loose: false }, 200)[3], "auto")
+})
+
+check("both agent scripts carry a prompt in each language", () => {
+  const scripts = ["bin/omarchy-docker-ask-agent", "bin/omarchy-docker-ask-agent-stack"]
+
+  for (const path of scripts) {
+    const body = fs.readFileSync(__dirname + "/" + path, "utf8")
+    // Two whole prompts, never one assembled from translated fragments: word
+    // order is not universal and a prompt is the one string where a clumsy
+    // sentence costs the answer.
+    assert.strictEqual((body.match(/cat <<PROMPT/g) || []).length, 2, path)
+    assert.ok(body.indexOf("$lang == pt") > 0, path + " branches on the language")
+    assert.ok(body.indexOf("Do not restart or change anything") > 0,
+      path + " has the English prompt")
+    assert.ok(body.indexOf("Não reinicie nem altere nada") > 0,
+      path + " has the Portuguese prompt")
+    // English is the fallback, not an error.
+    assert.ok(body.indexOf("[[ $lang == pt ]] || lang=en") > 0, path)
+  }
 })
 
 check("the compose file opens in the editor when the stack knows where it is", () => {
@@ -1584,12 +2035,62 @@ check("auto follows the environment and never guesses a neighbour", () => {
   assert.strictEqual(detectLanguage(""), "en")
 })
 
+// The settings screen takes its English from `manifest.json`, which already
+// describes every key, so `settings.label.*`, `settings.help.*` and
+// `settings.option.*` live in the `pt` table only. That is the one documented
+// asymmetry between the tables, and the next two checks pin it down from both
+// ends rather than waving it through.
+const MANIFEST_ENGLISH = /^settings\.(label|help|option)\./
+
 check("both tables carry the same keys", () => {
   // A key present in one and missing in the other is a string that silently
   // changes language mid-panel.
   const en = Object.keys(STRINGS.en).sort()
-  const pt = Object.keys(STRINGS.pt).sort()
+  const pt = Object.keys(STRINGS.pt).filter(k => !MANIFEST_ENGLISH.test(k)).sort()
   assert.deepStrictEqual(pt, en)
+
+  // ...and the exemption only ever runs one way. An English-only
+  // `settings.label.*` would be a string with no Portuguese and no manifest
+  // behind it either.
+  assert.deepStrictEqual(Object.keys(STRINGS.en).filter(k => MANIFEST_ENGLISH.test(k)), [])
+})
+
+check("every setting in the manifest has a Portuguese label", () => {
+  const schema = JSON.parse(fs.readFileSync(__dirname + "/manifest.json", "utf8"))
+    .barWidget.schema
+
+  for (const field of schema) {
+    assert.ok(STRINGS.pt["settings.label." + field.key],
+      "no Portuguese label for " + field.key)
+
+    // Descriptions are optional in the schema, but a field that has one in
+    // English and not in Portuguese loses its explanation in one language.
+    if (field.description) {
+      assert.ok(STRINGS.pt["settings.help." + field.key],
+        "no Portuguese help for " + field.key)
+    }
+
+    for (const option of field.options || []) {
+      assert.ok(STRINGS.pt["settings.option." + field.key + "." + option],
+        "no Portuguese label for " + field.key + " = " + option)
+    }
+  }
+})
+
+check("English falls through to the manifest, never to the key", () => {
+  setLanguage("en")
+  assert.strictEqual(tOr("settings.label.palette", "Cell colours"), "Cell colours")
+  assert.strictEqual(has("settings.label.palette"), false)
+
+  // A key that IS in the table wins over the fallback, in both languages.
+  assert.strictEqual(tOr("settings.title", "ignored"), "Settings")
+  setLanguage("pt")
+  assert.strictEqual(tOr("settings.title", "ignored"), "Configurações")
+  assert.strictEqual(tOr("settings.label.palette", "Cell colours"), "Cores das células")
+
+  // No fallback at all is still not the bare key shown to a user.
+  assert.strictEqual(tOr("settings.label.nope", ""), "")
+  setLanguage("en")
 })
 
 check("no translated string is empty", () => {

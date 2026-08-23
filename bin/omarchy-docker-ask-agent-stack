@@ -2,7 +2,11 @@
 
 # Hand a whole compose stack to the default Omarchy coding agent.
 #
-#   omarchy-docker-ask-agent-stack <project> [tail]
+#   omarchy-docker-ask-agent-stack <project> [tail] [lang]
+#
+# `lang` is en, pt, or auto (the default, which reads the environment). The
+# widget passes its own Language setting rather than letting the environment
+# decide, because the two can disagree.
 #
 # A failing stack is usually a failing relationship — the api cannot reach the
 # database, the worker cannot reach the queue — and one container's log is half
@@ -14,8 +18,18 @@ set -euo pipefail
 # Logs routinely carry connection strings and tokens.
 umask 077
 
-project=${1:?usage: omarchy-docker-ask-agent-stack <project> [tail]}
+project=${1:?usage: omarchy-docker-ask-agent-stack <project> [tail] [lang]}
 tail_lines=${2:-200}
+lang=${3:-auto}
+
+# English is the fallback, never the failure.
+if [[ $lang == auto ]]; then
+  case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+    pt*) lang=pt ;;
+    *) lang=en ;;
+  esac
+fi
+[[ $lang == pt ]] || lang=en
 
 fail() {
   notify-send -u critical "Docker" "$1" 2>/dev/null || true
@@ -23,18 +37,32 @@ fail() {
   exit 1
 }
 
+log_dir="${XDG_RUNTIME_DIR:-/tmp}/omarchy-docker"
+
+if [[ $lang == pt ]]; then
+  no_agent="Nenhum agente padrão definido. Escolha um com: omarchy default agent <nome>"
+  no_docker="docker não encontrado"
+  empty_stack="Nenhum container no stack $project"
+  bad_dir="Não vou escrever em $log_dir: não é um diretório meu"
+  no_log="(sem log)"
+else
+  no_agent="No default agent set. Choose one with: omarchy default agent <name>"
+  no_docker="docker not found"
+  empty_stack="No containers in stack $project"
+  bad_dir="Refusing to write to $log_dir: not a directory I own"
+  no_log="(no log)"
+fi
+
 agent=$(omarchy-default-agent)
-[[ -n $agent ]] || fail "Nenhum agente padrão definido. Escolha um com: omarchy default agent <nome>"
-command -v docker >/dev/null 2>&1 || fail "docker não encontrado"
+[[ -n $agent ]] || fail "$no_agent"
+command -v docker >/dev/null 2>&1 || fail "$no_docker"
 
 filter="label=com.docker.compose.project=$project"
 mapfile -t ids < <(docker ps -aq --filter "$filter")
-((${#ids[@]})) || fail "Nenhum container no stack $project"
+((${#ids[@]})) || fail "$empty_stack"
 
-log_dir="${XDG_RUNTIME_DIR:-/tmp}/omarchy-docker"
 mkdir -p -m 700 "$log_dir" 2>/dev/null || true
-[[ -d $log_dir && ! -L $log_dir && -O $log_dir ]] ||
-  fail "Não vou escrever em $log_dir: não é um diretório meu"
+[[ -d $log_dir && ! -L $log_dir && -O $log_dir ]] || fail "$bad_dir"
 
 bundle="$log_dir/${project//[^a-zA-Z0-9_-]/_}.stack.log"
 [[ -L $bundle ]] && rm -f "$bundle"
@@ -64,7 +92,7 @@ for id in "${ids[@]}"; do
     echo "===== $name ($state, exit $code, $restarts restarts, health $health) ====="
     # Both streams: container errors overwhelmingly arrive on stderr, and
     # splitting them here hides the interesting half.
-    docker logs --tail "$tail_lines" --timestamps "$id" 2>&1 || echo "(sem log)"
+    docker logs --tail "$tail_lines" --timestamps "$id" 2>&1 || echo "$no_log"
     echo
   } >>"$bundle"
 done
@@ -72,8 +100,10 @@ done
 lines=$(wc -l <"$bundle")
 [[ -n $workdir && -d $workdir ]] && cd "$workdir"
 
-prompt=$(
-  cat <<PROMPT
+# Two prompts, not one built from translated fragments.
+if [[ $lang == pt ]]; then
+  prompt=$(
+    cat <<PROMPT
 O stack "$project" desta máquina está com problema e quero saber por quê.
 
 Estado de cada container:
@@ -101,6 +131,38 @@ obter.
 
 Não reinicie nem altere nada sem me perguntar antes.
 PROMPT
-)
+  )
+else
+  prompt=$(
+    cat <<PROMPT
+The "$project" stack on this machine is misbehaving and I want to know why.
+
+The state of each container:
+
+$summary
+The logs of all of them, in the order above, are collected into a single file
+($lines lines), separated by "===== name =====" headers:
+
+  $bundle
+${compose_files:+
+The compose file that defines the stack is in:
+
+  ${compose_files//,/
+  }
+}${workdir:+
+The project directory is $workdir, and that is where this session started.
+}
+Read the log file first. A stack that fails is usually a relationship that
+fails — one service not reaching another — so compare the logs against each
+other and look at the order of the timestamps, not only at each log on its own.
+Tell me the root cause, which service it originates in, and what to fix.
+
+If the logs are not enough to conclude, say what is missing and which command
+gets it.
+
+Do not restart or change anything without asking me first.
+PROMPT
+  )
+fi
 
 exec omarchy-agent --prompt "$prompt"

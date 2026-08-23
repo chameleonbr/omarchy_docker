@@ -153,7 +153,37 @@ var STRINGS = {
     // resources
     "resource.inUse": "in use",
     "resource.anonymous": "anonymous",
-    "group.loose": "(loose)"
+    "group.loose": "(loose)",
+
+    // ------------------------------------------------------- settings
+    //
+    // Only the screen's own prose lives here. Every field's label and help
+    // text comes from `manifest.json`, which already carries both in English
+    // and is the single description of what each key does. Copying them into
+    // this table would create a second place to edit and one of them would go
+    // stale — so `settings.label.*` and `settings.help.*` appear in the `pt`
+    // table ONLY, and English falls through to the manifest. This is the one
+    // documented exception to "both tables carry the same keys", and the
+    // tests assert the exception rather than ignoring it.
+    "settings.title": "Settings",
+    "settings.close": "Done",
+    "settings.reset": "Reset to default",
+    "settings.resetAll": "Reset everything",
+    "settings.resetAllConfirm": "Reset all {count} changed settings to their defaults?",
+    "settings.changed": "{count} changed",
+    "settings.unchanged": "All at their defaults",
+    "settings.writeFailed": "Could not save: {error}",
+    "settings.readOnly": "This shell does not let a widget save its own settings. Use: omarchy bar set {id} <key> <value>",
+    "settings.section.look": "Appearance",
+    "settings.section.content": "What is shown",
+    "settings.section.label": "Rotating label",
+    "settings.section.actions": "Clicks and actions",
+    "settings.section.system": "Engine and sampling",
+    "settings.section.other": "Not filed yet",
+    "settings.hint.paletteCustom": "Three hex values: healthy, warning, broken.",
+    "settings.keys": "Tab moves between sections · 1…{count} jumps to one · s closes · Esc goes back",
+    "keys.hint": "f to find · s for settings · 1…4 sections · r refresh",
+    "settings.tip.settings": "Settings (s)"
   },
 
   pt: {
@@ -274,7 +304,108 @@ var STRINGS = {
 
     "resource.inUse": "em uso",
     "resource.anonymous": "anônimo",
-    "group.loose": "(soltos)"
+    "group.loose": "(soltos)",
+
+    // settings — a tela em si
+    "settings.title": "Configurações",
+    "settings.close": "Pronto",
+    "settings.reset": "Voltar ao padrão",
+    "settings.resetAll": "Restaurar tudo",
+    "settings.resetAllConfirm": "Restaurar as {count} configurações alteradas para o padrão?",
+    "settings.changed": "{count} alteradas",
+    "settings.unchanged": "Tudo no padrão",
+    "settings.writeFailed": "Não consegui salvar: {error}",
+    "settings.readOnly": "Este shell não deixa o widget salvar as próprias configurações. Use: omarchy bar set {id} <chave> <valor>",
+    "settings.section.look": "Aparência",
+    "settings.section.content": "O que aparece",
+    "settings.section.label": "Rótulo rotativo",
+    "settings.section.actions": "Cliques e ações",
+    "settings.section.system": "Engine e amostragem",
+    "settings.section.other": "Ainda sem seção",
+    "settings.hint.paletteCustom": "Três valores hex: saudável, atenção, quebrado.",
+    "settings.keys": "Tab muda de seção · 1…{count} pula direto · s fecha · Esc volta",
+    "keys.hint": "f para buscar · s para configurações · 1…4 seções · r atualiza",
+    "settings.tip.settings": "Configurações (s)",
+
+    // settings — rótulos e ajuda dos campos.
+    //
+    // O inglês NÃO está aqui: vem do `manifest.json`, que já descreve cada
+    // chave. Uma chave sem tradução cai no inglês do manifesto, que é a
+    // política de fallback deste arquivo aplicada a outra tabela.
+    "settings.label.palette": "Cores das células",
+    "settings.help.palette": "theme segue o tema do Omarchy e muda junto com ele. As paletas com nome são fixas. custom lê o campo abaixo.",
+    "settings.label.paletteCustom": "Cores personalizadas",
+    "settings.help.paletteCustom": "Três valores hex, nesta ordem: saudável, atenção, quebrado. Ex.: #3fb950,#d29922,#f85149. Qualquer outra coisa volta para o tema.",
+    "settings.label.cellSize": "Tamanho da célula (px)",
+    "settings.help.cellSize": "Célula menor cabe mais linhas na mesma barra, então o mosaico fica bem mais estreito — não só menor.",
+    "settings.label.cellGap": "Espaço entre células",
+    "settings.help.cellGap": "Mantenha em 2 ou mais: a barra pode cair em meio pixel, e um espaço de 1px some entre algumas células, que parecem grudadas.",
+    "settings.label.stackGap": "Espaço entre stacks (px)",
+    "settings.help.stackGap": "O espaço extra que marca onde uma stack do compose termina e a próxima começa.",
+    "settings.label.groupStacks": "Agrupar containers por stack",
+    "settings.help.groupStacks": "Desligado espalha todos os containers em linhas simples, sem fronteira entre stacks.",
+    "settings.label.maxWidth": "Largura máxima (px)",
+    "settings.help.maxWidth": "Acima disso o mosaico colapsa para uma célula por stack, e depois para um bloco só.",
+    "settings.label.pulseRestarting": "Pulsar containers reiniciando",
+    "settings.help.pulseRestarting": "O único movimento do widget, guardado para o estado que passaria despercebido.",
+    "settings.label.groupBy": "Uma célula por",
+    "settings.help.groupBy": "auto troca para stacks quando há mais containers do que o limite de células.",
+    "settings.label.stackOrder": "Ordem das stacks",
+    "settings.help.stackOrder": "Como o popup lista as stacks. O mosaico da barra continua alfabético em qualquer opção, para que uma célula nunca mude de lugar quando um container reinicia.",
+    "settings.label.showStopped": "Mostrar containers parados",
+    "settings.label.hideProjects": "Projetos escondidos",
+    "settings.help.hideProjects": "Nomes de projeto do compose, separados por vírgula.",
+    "settings.label.metricCpu": "Rotacionar: CPU",
+    "settings.help.metricCpu": "CPU somada de todos os containers rodando.",
+    "settings.label.metricMem": "Rotacionar: memória usada",
+    "settings.help.metricMem": "Memória total em bytes.",
+    "settings.label.metricMemPerc": "Rotacionar: memória %",
+    "settings.help.metricMemPerc": "Memória usada contra os limites dos próprios containers.",
+    "settings.label.metricNet": "Rotacionar: rede recebida",
+    "settings.help.metricNet": "Bytes recebidos desde que cada container subiu.",
+    "settings.label.metricCount": "Rotacionar: quantos rodando",
+    "settings.help.metricCount": "rodando / total. A única métrica que não custa nada para amostrar.",
+    "settings.label.metricRotateMs": "Rotação do rótulo (ms)",
+    "settings.label.primaryAction": "Clique esquerdo abre",
+    "settings.help.primaryAction": "popup mostra stacks e ações; lazydocker vai direto para o TUI. Clique do meio sempre abre o lazydocker.",
+    "settings.label.dockerUrl": "Clique direito abre esta URL",
+    "settings.help.dockerUrl": "Qualquer web UI que você use para containers — Portainer, Dozzle, um dashboard do compose. Abre no navegador. Vazio faz o clique direito apenas atualizar o estado.",
+    "settings.label.logTail": "Linhas de log",
+    "settings.label.notifications": "Notificações no desktop",
+    "settings.help.notifications": "Quando um container fica unhealthy, entra em loop de restart ou sai com erro — e uma vez quando se recupera.",
+    "settings.label.language": "Idioma",
+    "settings.help.language": "auto segue o LANG. O que não estiver traduzido cai no inglês.",
+    "settings.label.engine": "Engine de containers",
+    "settings.help.engine": "auto prefere o docker quando os dois estão instalados.",
+    "settings.label.statsIntervalMs": "Amostragem de CPU/memória (ms)",
+    "settings.help.statsIntervalMs": "docker stats custa segundos numa máquina ocupada. Amostrar mais rápido que isso não compra nada.",
+    "settings.label.statsOnBattery": "Amostrar CPU/memória na bateria",
+    "settings.label.pollIntervalMs": "Poll de segurança do estado (ms)",
+    "settings.help.pollIntervalMs": "Rede de proteção caso o stream do docker events morra em silêncio.",
+    "settings.label.openPollIntervalMs": "Poll do estado com o painel aberto (ms)",
+
+    // settings — valores das listas
+    "settings.option.palette.theme": "tema (segue o Omarchy)",
+    "settings.option.palette.traffic": "semáforo",
+    "settings.option.palette.ember": "brasa",
+    "settings.option.palette.ocean": "oceano",
+    "settings.option.palette.violet": "violeta",
+    "settings.option.palette.mono": "cinzas",
+    "settings.option.palette.custom": "personalizada",
+    "settings.option.stackOrder.failed": "quebradas primeiro",
+    "settings.option.stackOrder.name": "A-Z",
+    "settings.option.stackOrder.running": "ligadas primeiro",
+    "settings.option.groupBy.auto": "auto",
+    "settings.option.groupBy.container": "container",
+    "settings.option.groupBy.stack": "stack",
+    "settings.option.primaryAction.popup": "popup",
+    "settings.option.primaryAction.lazydocker": "lazydocker",
+    "settings.option.language.auto": "auto",
+    "settings.option.language.en": "inglês",
+    "settings.option.language.pt": "português",
+    "settings.option.engine.auto": "auto",
+    "settings.option.engine.docker": "docker",
+    "settings.option.engine.podman": "podman"
   }
 }
 
@@ -293,6 +424,23 @@ function detectLanguage(locale) {
 
 function language() {
   return LANGUAGE
+}
+
+// Whether a key exists at all, in the active table or in English.
+//
+// The settings screen needs this because it has a second source of text: the
+// plugin manifest, which carries every field's English label and description
+// already. `t()` returns the key itself when there is no entry, and a panel
+// reading "settings.label.palette" is the exact failure this file exists to
+// prevent — so the caller asks first and falls back to the manifest.
+function has(key) {
+  var table = STRINGS[LANGUAGE] || STRINGS.en
+  return table[key] !== undefined || STRINGS.en[key] !== undefined
+}
+
+function tOr(key, fallback, values) {
+  if (has(key)) return t(key, values)
+  return String(fallback === undefined || fallback === null ? key : fallback)
 }
 
 // An untranslated key shows the English, not the key: a panel reading

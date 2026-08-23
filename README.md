@@ -207,7 +207,44 @@ omarchy-shell avila.ultra-docker refresh
 
 ## Settings
 
-Every option is in the widget's settings screen. The ones worth knowing about:
+The gear in the panel header opens the settings screen, on top of the panel.
+Every option is on it, with its explanation next to it, and each one applies as
+you change it — there is no save button and no restart. A row that is no longer
+at its default grows a small reset arrow; the header says how many settings
+have moved and can put all of them back.
+
+Open it straight from a keybinding:
+
+```bash
+omarchy-shell avila.ultra-docker settings
+```
+
+The panel opens in command mode — nothing has a text cursor in it, so the
+letters are shortcuts:
+
+| Key | What it does |
+|---|---|
+| `f` or `/` | Find: moves into the search field |
+| `s` or `,` | Settings, and back again |
+| `r` | Refresh |
+| `1` … `9` | Jump to a section — the tabs in the list, the groups in the settings |
+| `Tab` / `Shift+Tab` | Next / previous section |
+| `Esc` | One step back: out of the field, then settings, then the filter, then the panel |
+
+Once you are in the search field every key is a character again; `Esc` hands
+the keyboard back, keeping the filter.
+
+The screen is built from the plugin's own manifest, so it is never out of date
+with what the widget actually reads. Everything it writes lands in the widget's
+entry under `bar.layout` in `~/.config/omarchy/shell.json`, which you can still
+edit by hand or from the CLI if you prefer:
+
+```bash
+omarchy bar set avila.ultra-docker palette ocean
+omarchy bar set avila.ultra-docker metricCount true --json   # --json for numbers and booleans
+```
+
+The options worth knowing about:
 
 | Setting | Default | Why you might change it |
 |---|---|---|
@@ -216,10 +253,22 @@ Every option is in the widget's settings screen. The ones worth knowing about:
 | `maxWidth` | 160 | where `auto` gives up and collapses to stacks |
 | `groupStacks` | true | off drops the stack blocks for plain balanced rows |
 | `stackGap` | 3 | how far apart the stack blocks sit |
-| `metrics` | `cpu,mem` | reorder, add `memPerc`/`net`/`count`, or empty to hide |
+| `palette` | `theme` | fixed cell colours instead of the theme's — `traffic`, `ember`, `ocean`, `violet`, `mono`, or `custom` |
+| `paletteCustom` | — | three hex values for `custom`, in order: healthy, warning, broken |
+| `stackOrder` | `failed` | how the popup lists stacks: `failed` first, `name` A–Z, or `running` first |
+| metric checkboxes | cpu, mem | one per metric — CPU, memory used, memory %, network in, running count — untick them all to hide the label |
 | `statsIntervalMs` | 30000 | `docker stats` is slow; see below |
 | `statsOnBattery` | false | sample CPU and memory on battery too |
 | `hideProjects` | — | stacks you never want to see |
+| `dockerUrl` | — | a web UI to open on right click — Portainer, Dozzle, whatever you keep |
+
+`stackOrder` is the popup's list only. The bar mosaic stays alphabetical
+whatever it is set to: a cell that jumps when a container breaks is a cell you
+have to read, and the mosaic exists so you do not have to.
+
+Cell colours follow the active Omarchy theme by default and change with it.
+Picking a named palette opts out of that — a decision that red means broken
+regardless of the wallpaper.
 
 ## A note on cost
 
@@ -243,7 +292,7 @@ is 30 seconds for a reason.
 node test_docker.js
 ```
 
-157 checks, no framework, no network, no daemon. `fixtures/` holds real
+190 checks, no framework, no network, no daemon. `fixtures/` holds real
 `docker ps` and `docker stats` output; the tests run against that.
 
 See `CLAUDE.md` for how the pieces fit and what has already bitten.

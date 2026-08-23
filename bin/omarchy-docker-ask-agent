@@ -3,7 +3,12 @@
 # Hand one container's log to the default Omarchy coding agent.
 #
 # Called by the avila.ultra-docker bar widget, and usable by hand:
-#   omarchy-docker-ask-agent <container-id> [name] [tail]
+#   omarchy-docker-ask-agent <container-id> [name] [tail] [lang]
+#
+# `lang` is en, pt, or auto (the default, which reads the environment). The
+# widget passes its own Language setting: that setting can be pt on an en_US
+# machine, and a prompt in a language the user did not pick is one they have to
+# translate before they can read the answer.
 #
 # The log goes to a file rather than into the prompt: a few hundred lines of
 # container output does not belong in argv, and every agent reads files anyway.
@@ -16,9 +21,21 @@ set -euo pipefail
 # Everything this script writes is for one person to read.
 umask 077
 
-id=${1:?usage: omarchy-docker-ask-agent <container-id> [name] [tail]}
+id=${1:?usage: omarchy-docker-ask-agent <container-id> [name] [tail] [lang]}
 name=${2:-$id}
 tail_lines=${3:-400}
+lang=${4:-auto}
+
+# English is the fallback, never the failure: an unknown tag gets English
+# rather than an error, because a prompt in the wrong language still works and
+# a missing prompt does not.
+if [[ $lang == auto ]]; then
+  case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+    pt*) lang=pt ;;
+    *) lang=en ;;
+  esac
+fi
+[[ $lang == pt ]] || lang=en
 
 fail() {
   # The widget runs this detached, so stderr goes nowhere a user will look.
@@ -27,10 +44,30 @@ fail() {
   exit 1
 }
 
-agent=$(omarchy-default-agent)
-[[ -n $agent ]] || fail "Nenhum agente padrão definido. Escolha um com: omarchy default agent <nome>"
+# XDG_RUNTIME_DIR is private to the user and cleaned at logout, which is where
+# this belongs. The /tmp fallback is shared, so the directory is created with
+# restrictive permissions and refused if it already exists as something we do
+# not own — otherwise a symlink planted there would redirect the log.
+log_dir="${XDG_RUNTIME_DIR:-/tmp}/omarchy-docker"
 
-command -v docker >/dev/null 2>&1 || fail "docker não encontrado"
+if [[ $lang == pt ]]; then
+  no_agent="Nenhum agente padrão definido. Escolha um com: omarchy default agent <nome>"
+  no_docker="docker não encontrado"
+  not_found="Container não encontrado: $name"
+  bad_dir="Não vou escrever em $log_dir: não é um diretório meu"
+  no_log="Não consegui ler o log de $name"
+else
+  no_agent="No default agent set. Choose one with: omarchy default agent <name>"
+  no_docker="docker not found"
+  not_found="No such container: $name"
+  bad_dir="Refusing to write to $log_dir: not a directory I own"
+  no_log="Could not read the log of $name"
+fi
+
+agent=$(omarchy-default-agent)
+[[ -n $agent ]] || fail "$no_agent"
+
+command -v docker >/dev/null 2>&1 || fail "$no_docker"
 
 # Facts worth having next to the log, in one docker call. Restart count and exit
 # code are usually the whole story for a container that will not stay up.
@@ -38,20 +75,14 @@ read -r state exit_code restarts health image started < <(
   docker inspect --format \
     '{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.Config.Image}} {{.State.StartedAt}}' \
     "$id" 2>/dev/null
-) || fail "Container não encontrado: $name"
+) || fail "$not_found"
 
 project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$id" 2>/dev/null || true)
 service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id" 2>/dev/null || true)
 workdir=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$id" 2>/dev/null || true)
 
-# XDG_RUNTIME_DIR is private to the user and cleaned at logout, which is where
-# this belongs. The /tmp fallback is shared, so the directory is created with
-# restrictive permissions and refused if it already exists as something we do
-# not own — otherwise a symlink planted there would redirect the log.
-log_dir="${XDG_RUNTIME_DIR:-/tmp}/omarchy-docker"
 mkdir -p -m 700 "$log_dir" 2>/dev/null || true
-[[ -d $log_dir && ! -L $log_dir && -O $log_dir ]] ||
-  fail "Não vou escrever em $log_dir: não é um diretório meu"
+[[ -d $log_dir && ! -L $log_dir && -O $log_dir ]] || fail "$bad_dir"
 
 log_file="$log_dir/${name//[^a-zA-Z0-9_-]/_}.log"
 # Never write through an existing symlink.
@@ -59,8 +90,7 @@ log_file="$log_dir/${name//[^a-zA-Z0-9_-]/_}.log"
 
 # Both streams: container errors overwhelmingly arrive on stderr, and splitting
 # them here would hide the interesting half.
-docker logs --tail "$tail_lines" --timestamps "$id" >"$log_file" 2>&1 ||
-  fail "Não consegui ler o log de $name"
+docker logs --tail "$tail_lines" --timestamps "$id" >"$log_file" 2>&1 || fail "$no_log"
 
 lines=$(wc -l <"$log_file")
 
@@ -70,8 +100,12 @@ if [[ -n $workdir && -d $workdir ]]; then
   cd "$workdir"
 fi
 
-prompt=$(
-  cat <<PROMPT
+# Two prompts rather than one assembled from translated fragments: word order
+# is not universal, and a prompt is the one string where a clumsy sentence costs
+# the answer.
+if [[ $lang == pt ]]; then
+  prompt=$(
+    cat <<PROMPT
 Um container Docker desta máquina está com problema e quero saber por quê.
 
 O que o Docker reporta:
@@ -96,6 +130,35 @@ suficiente para concluir, diga o que falta e qual comando roda para obter.
 
 Não reinicie nem altere nada sem me perguntar antes.
 PROMPT
-)
+  )
+else
+  prompt=$(
+    cat <<PROMPT
+A Docker container on this machine is misbehaving and I want to know why.
+
+What Docker reports:
+  container:  $name
+  service:    ${service:-(not part of a compose stack)}
+  stack:      ${project:-(not part of a compose stack)}
+  image:      $image
+  state:      $state
+  exit code:  $exit_code
+  restarts:   $restarts
+  health:     $health
+  started:    $started
+${workdir:+  directory:  $workdir
+}
+The last $lines lines of its log are in:
+
+  $log_file
+
+Read that file first. Tell me the root cause, what to fix and where —
+${workdir:+the compose file for this stack is in $workdir. }If the log is not
+enough to conclude, say what is missing and which command gets it.
+
+Do not restart or change anything without asking me first.
+PROMPT
+  )
+fi
 
 exec omarchy-agent --prompt "$prompt"
