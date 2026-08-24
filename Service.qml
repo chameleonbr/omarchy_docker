@@ -29,7 +29,6 @@ Item {
   property var statsById: ({})
   property bool daemonOk: true
   property string errorText: ""
-  property bool hasCompose: false
   // Container id -> action currently in flight, so the UI can show progress
   // and refuse a second click without guessing.
   property var busy: ({})
@@ -494,7 +493,7 @@ Item {
     markBusy(group.project, action)
     actionQueue.push({
       key: group.project,
-      command: Docker.stackCommand(action, group, root.hasCompose)
+      command: Docker.stackCommand(action, group)
     })
     pump()
   }
@@ -775,15 +774,6 @@ Item {
     if (eventsProcess.running) eventsProcess.running = false
     eventsProcess.command = Docker.eventsCommand()
     eventsProcess.running = true
-  }
-
-  // ------------------------------------------------------ compose check
-
-  Process {
-    id: composeCheck
-    command: ["docker", "compose", "version"]
-    running: true
-    onExited: function(exitCode) { root.hasCompose = exitCode === 0 }
   }
 
   Component.onCompleted: {

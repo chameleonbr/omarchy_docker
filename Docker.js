@@ -30,16 +30,67 @@ function engineLabel() {
   return ENGINE === "podman" ? "Podman" : "Docker"
 }
 
+// ------------------------------------------------------------------ limits
+//
+// Everything the daemon prints about a container is partly written by that
+// container's image. `docker ps --format '{{json .}}'` carries the image's
+// labels verbatim, and the daemon accepts a very large one: a 100 KB
+// `com.docker.compose.project` went through in testing, and an image `LABEL`
+// has no argv ceiling in front of it at all.
+//
+// The byte count is not the interesting part — an image hostile enough to do
+// this can burn memory directly, without any help from us. What it must never
+// do is hand a Text binding a string long enough to stall Qt's layout while it
+// wraps a hundred kilobytes across a bar widget. Every parser funnels through
+// parseRows, so the ceiling lives here rather than on thirty String() calls.
+var LIMITS = {
+  stdout: 4194304, // 4 MiB per refresh; past this we are parsing a payload
+  rows: 2000,      // containers, images, volumes or networks in one listing
+  field: 1024,     // any single value that reaches a binding or a command
+  labelBlob: 16384, // the whole "k=v,k=v" label string of one object
+  labels: 64       // labels kept per object; we read four
+}
+
+// Truncation is visible on purpose: a name that ends in an ellipsis is a name
+// something tried to make too long, and that is worth seeing.
+//
+// Control characters go at the same time. Docker puts none in this output, but
+// a label takes a newline happily, and a service name that renders as two rows
+// pushes every cell after it out of line — the mosaic's whole job is that a
+// cell stays where it was.
+function capField(value, max) {
+  var text = String(value === undefined || value === null ? "" : value)
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+  var limit = max || LIMITS.field
+  return text.length <= limit ? text : text.slice(0, limit) + "\u2026"
+}
+
+function capRow(row) {
+  if (!row || typeof row !== "object") return row
+  for (var key in row) {
+    if (typeof row[key] !== "string") continue
+    row[key] = capField(row[key], key === "Labels" ? LIMITS.labelBlob : LIMITS.field)
+  }
+  return row
+}
+
 // Docker prints one JSON object per line; Podman prints a single JSON array.
 // Accepting both is cheaper than branching at every call site.
 function parseRows(stdout) {
-  var text = String(stdout || "").trim()
+  var text = String(stdout || "")
+  // A listing this large is not a listing. Truncating the array form breaks its
+  // JSON and yields nothing, which is the right answer for input this shape.
+  if (text.length > LIMITS.stdout) text = text.slice(0, LIMITS.stdout)
+  text = text.trim()
   if (!text) return []
 
   if (text.charAt(0) === "[") {
     try {
       var array = JSON.parse(text)
-      return Array.isArray(array) ? array : []
+      if (!Array.isArray(array)) return []
+      var capped = array.slice(0, LIMITS.rows)
+      for (var a = 0; a < capped.length; a++) capRow(capped[a])
+      return capped
     } catch (error) {
       return []
     }
@@ -47,11 +98,11 @@ function parseRows(stdout) {
 
   var rows = []
   var lines = text.split("\n")
-  for (var i = 0; i < lines.length; i++) {
+  for (var i = 0; i < lines.length && rows.length < LIMITS.rows; i++) {
     var line = lines[i].trim()
     if (!line) continue
     try {
-      rows.push(JSON.parse(line))
+      rows.push(capRow(JSON.parse(line)))
     } catch (error) {
       continue // a partial line mid-stream must not drop the whole refresh
     }
@@ -180,8 +231,8 @@ function parsePs(stdout) {
       runningFor: String(raw.RunningFor || ""),
       // Compose records where the stack was defined. It is what lets a click
       // open lazydocker scoped to that stack instead of the whole daemon.
-      workingDir: labels["com.docker.compose.project.working_dir"] || "",
-      configFiles: splitList(labels["com.docker.compose.project.config_files"]),
+      workingDir: safeWorkingDir(labels["com.docker.compose.project.working_dir"]),
+      configFiles: safePaths(splitList(labels["com.docker.compose.project.config_files"])),
       cell: classify(raw)
     })
   }
@@ -209,18 +260,57 @@ function firstName(names) {
 
 // Labels arrive as a flat "k=v,k=v" string. Values may contain "=", keys never
 // do, so split on the first "=" only.
+//
+// Capped twice over: an image can declare as many labels as it likes, and each
+// one as long as it likes. We read four of them.
 function parseLabels(labels) {
   var out = {}
   var parts = String(labels || "").split(",")
+  var kept = 0
 
-  for (var i = 0; i < parts.length; i++) {
+  for (var i = 0; i < parts.length && kept < LIMITS.labels; i++) {
     var part = parts[i]
     if (!part) continue
     var split = part.indexOf("=")
     if (split <= 0) continue
-    out[part.slice(0, split)] = part.slice(split + 1)
+    out[part.slice(0, split)] = capField(part.slice(split + 1))
+    kept++
   }
 
+  return out
+}
+
+// ------------------------------------------------------ paths from labels
+//
+// `com.docker.compose.project.working_dir` and `.config_files` are labels, and
+// a label is whatever the image says it is. This is not theoretical: a plain
+// `LABEL` line in a Dockerfile lands in `.Config.Labels`, so `docker run` on a
+// hostile image is the entire precondition — no compose, no flags, no
+// cooperation from the user beyond running the image.
+//
+// A path that fails this stops being a compose origin, and the stack degrades
+// to the unscoped behaviour that containers started outside compose already
+// get. Absolute, no traversal, no NUL or newline (both of which exist to end
+// one string early and start another), and never "/" itself.
+function isSafePath(value) {
+  var path = String(value || "")
+  if (!path || path.length > LIMITS.field) return false
+  if (path.charAt(0) !== "/") return false
+  if (path === "/") return false
+  if (/[\u0000-\u001f]/.test(path)) return false
+  if (/(^|\/)\.\.(\/|$)/.test(path)) return false
+  return true
+}
+
+function safeWorkingDir(value) {
+  return isSafePath(value) ? String(value) : ""
+}
+
+function safePaths(list) {
+  var out = []
+  for (var i = 0; i < (list || []).length; i++) {
+    if (isSafePath(list[i])) out.push(list[i])
+  }
   return out
 }
 
@@ -1758,28 +1848,29 @@ function containerCommand(action, id) {
 // one that was removed, and it ignores edits to the compose file. `up -d` does
 // both, which is what someone means by "start this stack". Stopping stays
 // `stop` — never `down`, which would delete the containers and their networks.
-function stackCommand(action, group, hasCompose) {
+// The container ids, never `compose`, and for two reasons that arrived
+// together.
+//
+// The first is correctness: this array goes straight to Process.command, which
+// runs argv with no shell in front of it. The compose branch that used to live
+// here ran every value through shellQuote, so compose received a project name
+// with literal apostrophes around it and answered `invalid project name
+// "'web-shop'"`. Every stack action on a compose project failed.
+//
+// The second is that compose has to be told where the project lives, and the
+// only record of that is `com.docker.compose.project.working_dir` and
+// `.config_files` — labels, which an image writes. Pointing `compose -f` at a
+// file of the image's choosing and then asking it to `up -d` hands container
+// creation, and with it bind mounts, to whoever built the image.
+//
+// The ids cost nothing: they came from the listing that drew this group, so
+// they exist by definition, and restarting exactly those containers is what
+// "restart stack" means.
+function stackCommand(action, group) {
   var containers = (group && group.containers) || []
-
-  if (hasCompose && group && group.project && !group.loose) {
-    var command = [ENGINE, "compose"]
-
-    // Compose needs to find the project's files; the labels record where they
-    // were. Without this it looks in the current directory and finds nothing.
-    if (group.workingDir) command.push("--project-directory", shellQuote(group.workingDir))
-    var files = group.configFiles || []
-    for (var f = 0; f < files.length; f++) command.push("-f", shellQuote(files[f]))
-    command.push("-p", shellQuote(group.project))
-
-    if (action === "start") command.push("up", "-d")
-    else command.push(action)
-
-    return command
-  }
-
-  var fallback = [ENGINE, action === "start" ? "start" : action]
-  for (var i = 0; i < containers.length; i++) fallback.push(containers[i].id)
-  return fallback
+  var command = [ENGINE, action === "start" ? "start" : action]
+  for (var i = 0; i < containers.length; i++) command.push(containers[i].id)
+  return command
 }
 
 // Which actions a container can take right now. Offering "start" on a running

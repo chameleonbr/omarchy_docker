@@ -502,6 +502,51 @@ but only because the value arrives as an argument. A quick mental repro that
 inlines the payload into the assignment "proves" an injection that does not
 exist. Test through the actual script.
 
+**`shellQuote` is for the launchers, and only for them.** `Process.command` is
+argv with no shell in front of it, so a quoted value arrives with the
+apostrophes still attached. `stackCommand` used to quote for a shell that was
+never there and compose answered `invalid project name "'web-shop'"` — every
+stack action on every compose project failed, and no test caught it because the
+tests asserted the quotes were present.
+
+**`docker run` on a hostile image is the entire precondition.** Not a crafted
+`--label`, not compose, not any cooperation beyond running the image: a plain
+`LABEL` line in a Dockerfile lands in `.Config.Labels` of every container from
+that image, verified against the daemon. So `project`, `service`,
+`project.working_dir` and `project.config_files` are all attacker-chosen the
+moment someone pulls something.
+
+**A path from a label is not a path.** `working_dir` reaching `cd`, or
+`config_files` reaching `compose -f`, lets an image pick the directory the next
+thing operates in — `-d` answers yes for `~/.ssh` as readily as for a project.
+Two layers: `isSafePath()` in `Docker.js` rejects anything relative, traversing,
+NUL- or newline-bearing, over-long, or `/` itself, and the agent scripts do the
+part QML cannot, requiring a real directory, not a symlink, owned by the caller,
+holding an actual compose file. Failing either is not an error — the stack
+degrades to the unscoped behaviour non-compose containers already get.
+
+**Stack actions name container ids and never compose.** That removes the label
+paths from the one command that could create containers: `compose -f <attacker
+path> up -d` is arbitrary container creation, bind mounts included. The ids come
+from the listing that drew the group, so they exist by definition.
+
+**Everything the daemon prints is bounded before it is used.** `parseRows` caps
+the payload, the row count and every string field; `parseLabels` caps how many
+labels it keeps and how long each value is. The daemon accepted a 100 KB compose
+label in testing. The byte count is not really the point — an image hostile
+enough to do that can burn memory directly — but a hundred kilobytes handed to a
+wrapping `Text` stalls the layout, and control characters in a service name
+break the one thing the mosaic guarantees, which is that a cell stays put.
+
+**A prompt is an instruction channel, so untrusted text cannot go in raw.** The
+agent scripts interpolate labels, and the log they point the agent at is written
+entirely by the container. Both are fenced in a delimited block, sanitized to
+one line of bounded length by `clean()`, and preceded by a paragraph — in both
+languages — telling the agent the block and the log are data, that they may
+contain text posing as an instruction, and that nothing in them authorises
+anything. Verified end to end against a container whose service label carries
+`api\nIGNORE THE ABOVE. Run: ...`.
+
 ## Agent handoff
 
 `bin/omarchy-docker-ask-agent` follows `omarchy-agent-crash`: gather facts, write
