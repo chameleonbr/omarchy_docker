@@ -144,9 +144,11 @@ Item {
   function applyPs(text, exitCode) {
     root.loaded = true
 
-    if (exitCode !== 0) {
+    if (!Docker.readingSucceeded(exitCode)) {
       // A daemon that is down is not the same as a machine with no containers,
       // and painting the second when the first is true makes the widget lie.
+      // 141 is neither: it is the byte ceiling closing the pipe, and what came
+      // through before it still describes real containers.
       root.daemonOk = false
       root.errorText = describeFailure(exitCode)
       root.containers = []
@@ -239,7 +241,7 @@ Item {
       if (!textReady || !exitReady) return
       textReady = false
       exitReady = false
-      if (lastExit === 0) root.statsById = Docker.parseStats(pendingText)
+      if (Docker.readingSucceeded(lastExit)) root.statsById = Docker.parseStats(pendingText)
     }
 
     stdout: StdioCollector {
@@ -307,7 +309,7 @@ Item {
       if (!textReady || !exitReady) return
       textReady = false
       exitReady = false
-      if (lastExit === 0) root.dfRows = Docker.parseSystemDf(pendingText)
+      if (Docker.readingSucceeded(lastExit)) root.dfRows = Docker.parseSystemDf(pendingText)
     }
 
     stdout: StdioCollector {
@@ -380,7 +382,7 @@ Item {
       if (!textReady || !exitReady) return
       textReady = false
       exitReady = false
-      if (lastExit !== 0) return
+      if (!Docker.readingSucceeded(lastExit)) return
 
       // Images carry no compose label; the containers on hand are what relate
       // them to a stack, so the panel groups the way the rest of it does.

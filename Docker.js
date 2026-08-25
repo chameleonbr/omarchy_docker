@@ -1367,7 +1367,7 @@ function totalReclaimable(dfRows) {
 }
 
 function systemDfCommand() {
-  return [ENGINE, "system", "df", "--format", "{{json .}}"]
+  return boundedCommand([ENGINE, "system", "df", "--format", "{{json .}}"])
 }
 
 // ------------------------------------------------------------- filtering
@@ -1456,15 +1456,15 @@ function conflictText(blocked) {
 // refusal is shown rather than worked around.
 
 function imagesCommand() {
-  return [ENGINE, "images", "--format", "{{json .}}"]
+  return boundedCommand([ENGINE, "images", "--format", "{{json .}}"])
 }
 
 function volumesCommand() {
-  return [ENGINE, "volume", "ls", "--format", "{{json .}}"]
+  return boundedCommand([ENGINE, "volume", "ls", "--format", "{{json .}}"])
 }
 
 function networksCommand() {
-  return [ENGINE, "network", "ls", "--format", "{{json .}}"]
+  return boundedCommand([ENGINE, "network", "ls", "--format", "{{json .}}"])
 }
 
 function parseImages(stdout) {
@@ -1791,7 +1791,7 @@ function gauges(aggregate, dfRows, hostDisk) {
 }
 
 function hostDiskCommand() {
-  return ["df", "-B1", "--output=used,size", "/"]
+  return boundedCommand(["df", "-B1", "--output=used,size", "/"])
 }
 
 function parseHostDisk(stdout) {
@@ -1825,15 +1825,22 @@ function daemonStatusCommand() {
 // -------------------------------------------------------------- commands
 
 function psCommand() {
-  return [ENGINE, "ps", "-a", "--no-trunc", "--format", "{{json .}}"]
+  return boundedCommand([ENGINE, "ps", "-a", "--no-trunc", "--format", "{{json .}}"])
 }
 
+// The one long-lived reader, and the one that cannot be piped through `head`:
+// a byte ceiling would terminate the stream the first time it was reached.
+//
+// So it is bounded by not asking. `{{json .}}` carries Actor.Attributes, which
+// is every label the container has — a hostile image's hundred-kilobyte label
+// would arrive on this stream on every event about it, forever. shouldRefresh()
+// only ever reads the type and the action, so that is all the format emits.
 function eventsCommand() {
-  return [ENGINE, "events", "--format", "{{json .}}"]
+  return [ENGINE, "events", "--format", "{{.Type}} {{.Action}}"]
 }
 
 function statsCommand() {
-  return [ENGINE, "stats", "--no-stream", "--format", "{{json .}}"]
+  return boundedCommand([ENGINE, "stats", "--no-stream", "--format", "{{json .}}"])
 }
 
 // Always address a container by id: names get reused across compose runs, ids
@@ -1936,6 +1943,37 @@ function slug(value) {
 // quoted or it splits into two broken arguments.
 function shellQuote(value) {
   return "'" + String(value === undefined || value === null ? "" : value).replace(/'/g, "'\\''") + "'"
+}
+
+// ------------------------------------------------- bounding at the source
+//
+// `StdioCollector` holds whatever it is given: `text` is read-only and there is
+// no size property on it, so a cap applied after collection is a cap applied
+// too late. Neither does SplitParser help — it splits on a marker, and one
+// unterminated line is still buffered whole. The only place a byte can be
+// dropped before the shell's own memory pays for it is upstream of the pipe.
+//
+// `set -o pipefail` keeps the engine's exit status rather than head's, which is
+// what tells a dead daemon apart from a machine with no containers. When the
+// output really does overrun, head closes the pipe, the engine dies of SIGPIPE
+// and the pipeline reports 141 — truncated, but parseable, and handled as such
+// at the call site.
+//
+// bash rather than sh: pipefail is not POSIX, and dash's support for it is not
+// something to bet a daemon-down message on.
+function boundedCommand(argv, limit) {
+  var parts = []
+  for (var i = 0; i < argv.length; i++) parts.push(shellQuote(argv[i]))
+  var max = Number(limit) || LIMITS.stdout
+  return ["bash", "-c", "set -o pipefail; " + parts.join(" ") + " | head -c " + max]
+}
+
+// head closed the pipe on us. The output is short by definition, and what
+// arrived still parses.
+var TRUNCATED_EXIT = 141
+
+function readingSucceeded(exitCode) {
+  return exitCode === 0 || exitCode === TRUNCATED_EXIT
 }
 
 // group === null opens the whole daemon.
@@ -2051,7 +2089,7 @@ function restartingIds(containers) {
 
 function inspectRestartsCommand(ids) {
   if (!ids || ids.length === 0) return []
-  return [ENGINE, "inspect", "--format", "{{.Id}} {{.RestartCount}}"].concat(ids)
+  return boundedCommand([ENGINE, "inspect", "--format", "{{.Id}} {{.RestartCount}}"].concat(ids))
 }
 
 function parseRestarts(stdout) {
@@ -2168,20 +2206,19 @@ var REFRESH_ACTIONS = [
   "restart", "rename", "update", "health_status"
 ]
 
+// "container start", or "container health_status: healthy". Two fields, and the
+// second may carry a colon.
 function shouldRefresh(line) {
-  var raw
-  try {
-    raw = JSON.parse(String(line || "").trim())
-  } catch (error) {
-    return false
-  }
+  var text = String(line || "").trim()
+  if (!text) return false
 
-  if (String(raw.Type || "") !== "container") return false
+  var space = text.indexOf(" ")
+  if (space <= 0) return false
+  if (text.slice(0, space) !== "container") return false
 
-  var action = String(raw.Action || "")
+  var action = text.slice(space + 1).trim()
   // health_status arrives as "health_status: healthy".
-  var head = action.split(":")[0].trim()
-  return REFRESH_ACTIONS.indexOf(head) >= 0
+  return REFRESH_ACTIONS.indexOf(action.split(":")[0].trim()) >= 0
 }
 
 // Reconnect backoff for the events stream. Losing it is routine (daemon

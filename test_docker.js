@@ -1225,31 +1225,73 @@ check("a published port becomes something you can open", () => {
 })
 
 check("read commands have the shape the service runs", () => {
-  assert.deepStrictEqual(psCommand(), ["docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}"])
-  assert.deepStrictEqual(statsCommand(), ["docker", "stats", "--no-stream", "--format", "{{json .}}"])
-  assert.deepStrictEqual(eventsCommand(), ["docker", "events", "--format", "{{json .}}"])
+  assert.deepStrictEqual(psCommand(),
+    boundedCommand(["docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}"]))
+  assert.deepStrictEqual(statsCommand(),
+    boundedCommand(["docker", "stats", "--no-stream", "--format", "{{json .}}"]))
+  // Not {{json .}}: that carries Actor.Attributes, which is every label the
+  // container has, on every event, on the one stream that stays open.
+  assert.deepStrictEqual(eventsCommand(), ["docker", "events", "--format", "{{.Type}} {{.Action}}"])
   assert.strictEqual(logsCommand("abc", 200), "docker logs -f --tail 200 abc")
+})
+
+check("every one-shot reader is bounded before it reaches the collector", () => {
+  // StdioCollector has no size property and `text` is read-only, so a cap
+  // applied after collection is applied too late — the bytes are already in the
+  // shell's memory. The only place to drop one is upstream of the pipe.
+  const readers = {
+    psCommand, statsCommand, systemDfCommand, imagesCommand,
+    volumesCommand, networksCommand, hostDiskCommand
+  }
+
+  for (const [name, build] of Object.entries(readers)) {
+    const command = build()
+    assert.strictEqual(command[0], "bash", name + " runs under bash")
+    assert.ok(command[2].includes("| head -c " + LIMITS.stdout), name + " is capped")
+    // pipefail, or head's exit status hides a dead daemon behind an empty
+    // listing — and those are not the same thing.
+    assert.ok(command[2].startsWith("set -o pipefail; "), name + " keeps the engine's status")
+  }
+
+  const restarts = inspectRestartsCommand(["abc"])
+  assert.strictEqual(restarts[0], "bash")
+  assert.ok(restarts[2].includes("| head -c "))
+})
+
+check("a truncated read is still a read, and a dead daemon still is not", () => {
+  // head closing the pipe kills the engine with SIGPIPE, and pipefail reports
+  // it. What arrived still parses; anything else is a real failure.
+  assert.ok(readingSucceeded(0), "clean")
+  assert.ok(readingSucceeded(141), "truncated by the ceiling")
+  assert.ok(!readingSucceeded(1), "the engine refused")
+  assert.ok(!readingSucceeded(127), "no engine at all")
+})
+
+check("bounding quotes what it wraps", () => {
+  // The argv reaches a shell now, so it has to survive one. Container ids are
+  // parsed from output an image contributes to.
+  const command = boundedCommand(["docker", "inspect", "a'b; rm -rf ~"])
+  assert.ok(command[2].includes("'a'\\''b; rm -rf ~'"), "the payload stays one argument")
 })
 
 // -------------------------------------------------------------- events
 
 check("container lifecycle events trigger a refresh", () => {
   for (const action of ["start", "die", "stop", "create", "destroy", "restart", "pause"]) {
-    assert.ok(shouldRefresh(JSON.stringify({ Type: "container", Action: action })), action)
+    assert.ok(shouldRefresh("container " + action), action)
   }
 })
 
 check("health transitions trigger a refresh", () => {
-  assert.ok(shouldRefresh(JSON.stringify({
-    Type: "container", Action: "health_status: unhealthy"
-  })))
+  assert.ok(shouldRefresh("container health_status: unhealthy"))
 })
 
 check("noise on the event stream is ignored", () => {
-  assert.ok(!shouldRefresh(JSON.stringify({ Type: "image", Action: "pull" })))
-  assert.ok(!shouldRefresh(JSON.stringify({ Type: "network", Action: "connect" })))
-  assert.ok(!shouldRefresh(JSON.stringify({ Type: "container", Action: "exec_start" })))
-  assert.ok(!shouldRefresh("{partial"))
+  assert.ok(!shouldRefresh("image pull"))
+  assert.ok(!shouldRefresh("network connect"))
+  assert.ok(!shouldRefresh("container exec_start"))
+  assert.ok(!shouldRefresh("container"), "a type with no action")
+  assert.ok(!shouldRefresh("partial"))
   assert.ok(!shouldRefresh(""))
 })
 
@@ -1568,16 +1610,19 @@ check("the engine prefixes every command", () => {
     setEngine("podman")
     assert.strictEqual(engine(), "podman")
     assert.strictEqual(engineLabel(), "Podman")
-    assert.strictEqual(psCommand()[0], "podman")
-    assert.strictEqual(statsCommand()[0], "podman")
-    assert.strictEqual(imagesCommand()[0], "podman")
+    // The readers are wrapped for the byte ceiling, so the engine sits inside
+    // the pipeline rather than at argv[0].
+    assert.ok(psCommand()[2].startsWith("set -o pipefail; 'podman' 'ps'"))
+    assert.ok(statsCommand()[2].includes("'podman' 'stats'"))
+    assert.ok(imagesCommand()[2].includes("'podman' 'images'"))
+    assert.strictEqual(eventsCommand()[0], "podman", "the stream is not wrapped")
     assert.strictEqual(containerCommand("restart", "abc")[0], "podman")
     assert.deepStrictEqual(daemonCommand("start"), ["systemctl", "start", "podman.service"])
     assert.strictEqual(pruneTargets([])[0].command[0], "podman")
   } finally {
     setEngine("docker")
   }
-  assert.strictEqual(psCommand()[0], "docker")
+  assert.ok(psCommand()[2].includes("'docker' 'ps'"))
 })
 
 check("anything that is not podman is docker", () => {
@@ -1790,7 +1835,9 @@ check("host disk parses the df output it asks for", () => {
   const out = "     USED      SIZE\n307793186816 509943480320\n"
   assert.deepStrictEqual(parseHostDisk(out), { used: 307793186816, total: 509943480320 })
   assert.deepStrictEqual(parseHostDisk(""), { used: 0, total: 0 })
-  assert.deepStrictEqual(hostDiskCommand(), ["df", "-B1", "--output=used,size", "/"])
+  const disk = hostDiskCommand()
+  assert.strictEqual(disk[0], "bash", "bounded like every other reader")
+  assert.ok(disk[2].includes("'df' '-B1' '--output=used,size' '/'"))
 })
 
 // -------------------------------------------------------- daemon control
@@ -2084,9 +2131,9 @@ check("only restarting containers are inspected", () => {
   assert.deepStrictEqual(inspectRestartsCommand([]), [], "nothing restarting, no call")
 
   const command = inspectRestartsCommand(ids)
-  assert.strictEqual(command[0], "docker")
-  assert.ok(command.includes("--format"))
-  assert.ok(command.includes(ids[0]))
+  assert.strictEqual(command[0], "bash", "bounded like every other reader")
+  assert.ok(command[2].includes("--format"))
+  assert.ok(command[2].includes(ids[0]))
 })
 
 check("restart counts parse, and nonsense does not", () => {

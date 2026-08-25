@@ -72,6 +72,10 @@ mapfile -t ids < <(docker ps -aq --filter "$filter")
 mkdir -p -m 700 "$log_dir" 2>/dev/null || true
 [[ -d $log_dir && ! -L $log_dir && -O $log_dir ]] || fail "$bad_dir"
 
+# Per container, so a stack of twenty cannot produce twenty times the ceiling
+# and one container cannot eat the whole bundle.
+per_container_bytes=$((256 * 1024))
+
 bundle="$log_dir/${project//[^a-zA-Z0-9_-]/_}.stack.log"
 # Create rather than truncate: with `set -C` the redirect fails outright if
 # anything already sits at that path, so this only ever writes a file this run
@@ -101,9 +105,15 @@ for id in "${ids[@]}"; do
 
   {
     echo "===== $name ($state, exit $code, $restarts restarts, health $health) ====="
+    # `--tail` bounds lines, and a line has no length: one printf with no
+    # newline in it is a log of one line and any number of bytes. The byte
+    # ceiling is per container, so one noisy container cannot crowd the rest of
+    # the stack out of the bundle. XDG_RUNTIME_DIR is usually a tmpfs, so this
+    # is memory rather than disk.
+    #
     # Both streams: container errors overwhelmingly arrive on stderr, and
     # splitting them here hides the interesting half.
-    docker logs --tail "$tail_lines" --timestamps "$id" 2>&1 || echo "$no_log"
+    docker logs --tail "$tail_lines" --timestamps "$id" 2>&1 | head -c "$per_container_bytes" || echo "$no_log"
     echo
   } >>"$bundle"
 done

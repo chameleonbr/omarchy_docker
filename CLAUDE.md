@@ -530,13 +530,51 @@ paths from the one command that could create containers: `compose -f <attacker
 path> up -d` is arbitrary container creation, bind mounts included. The ids come
 from the listing that drew the group, so they exist by definition.
 
-**Everything the daemon prints is bounded before it is used.** `parseRows` caps
-the payload, the row count and every string field; `parseLabels` caps how many
-labels it keeps and how long each value is. The daemon accepted a 100 KB compose
-label in testing. The byte count is not really the point — an image hostile
-enough to do that can burn memory directly — but a hundred kilobytes handed to a
-wrapping `Text` stalls the layout, and control characters in a service name
-break the one thing the mosaic guarantees, which is that a cell stays put.
+**Everything the daemon prints is bounded before it is used, and "before" is
+the load-bearing word.** `parseRows` caps the payload, the row count and every
+string field, and `parseLabels` caps how many labels it keeps and how long each
+value is — but a cap at parse time is a cap after `StdioCollector` already holds
+the bytes. `text` is read-only and the type has no size property, so there is no
+QML-side ceiling to set; `SplitParser` does not help either, because one
+unterminated line is still buffered whole.
+
+So every one-shot reader is wrapped by `boundedCommand()`:
+`bash -c 'set -o pipefail; <argv> | head -c 4194304'`. The `pipefail` is not
+decoration — without it the pipeline reports head's status, and a dead daemon
+would come back as 0 with no output, which is precisely the lie the widget must
+not tell. When the ceiling is actually hit the engine dies of SIGPIPE and the
+pipeline reports 141, so `readingSucceeded()` accepts 0 and 141 and nothing
+else. Every call site asks it rather than comparing to 0.
+
+The argv reaches a shell now, so `boundedCommand` quotes each element. Container
+ids are parsed from output an image contributes to.
+
+**The events stream is bounded by not asking.** It is the one long-lived reader,
+and `head -c` would end it the first time the ceiling was reached. `{{json .}}`
+carries `Actor.Attributes` — every label the container has — so a hostile
+image's hundred-kilobyte label would arrive on that stream on every event about
+it, forever. `shouldRefresh()` only ever read the type and the action, so the
+format now emits `{{.Type}} {{.Action}}` and nothing else.
+
+Known and accepted: truncation cuts the tail, so a container early in docker's
+ordering whose single line exceeds the ceiling starves the ones after it. The
+widget then shows fewer containers. That is a worse listing, not a frozen shell,
+and there is no cheap fix that keeps the ceiling.
+
+The daemon accepted a 100 KB compose label in testing. The byte count was never
+quite the point on its own — an image hostile enough to do that can burn memory
+directly — but a hundred kilobytes handed to a wrapping `Text` stalls the
+layout, and control characters in a service name break the one thing the mosaic
+guarantees, which is that a cell stays put.
+
+**`--tail` bounds lines, and a line has no length.** One `printf` with no
+newline in it is a log of one line and any number of bytes: measured at 19.9 MB
+in zero lines from a container doing nothing but that. Both agent scripts pipe
+`docker logs` through `head -c` as well — 1 MiB for a single container, 256 KiB
+per container for a stack bundle so one noisy service cannot crowd out the
+rest — and the single-container prompt says so when it happens, because a log
+that stops mid-sentence otherwise reads as a container that stopped mid-sentence.
+`XDG_RUNTIME_DIR` is usually a tmpfs, so this is memory, not disk.
 
 **A prompt is an instruction channel, so untrusted text cannot go in raw.** The
 agent scripts interpolate labels, and the log they point the agent at is written
