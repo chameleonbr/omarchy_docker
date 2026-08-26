@@ -426,36 +426,6 @@ Panel {
     onTriggered: root.advanceMetric()
   }
 
-  // ------------------------------------------------------------ tooltip
-
-  readonly property string tooltipText: {
-    if (!daemonOk) return service ? service.errorText : "Docker indisponível"
-    if (containers.length === 0) return "Nenhum container"
-
-    var lines = []
-    for (var i = 0; i < groups.length; i++) {
-      var group = groups[i]
-      if (group.worst === "ok" || group.worst === "idle") continue
-      var bad = []
-      for (var j = 0; j < group.containers.length; j++) {
-        var container = group.containers[j]
-        if (container.cell === "ok" || container.cell === "idle") continue
-        bad.push(container.service + " " + container.state)
-      }
-      lines.push(group.project + ": " + bad.join(", "))
-    }
-
-    // What one cell means is not self-evident, especially once the mosaic
-    // collapses to stacks — so the tooltip says it outright.
-    var head = resolved.mode === "stack"
-      ? resolved.cells.length + " stacks · " + summary.running + "/" + summary.total + " containers"
-      : summary.running + "/" + summary.total + " containers em "
-        + resolved.grid.blocks + " stacks"
-
-    if (lines.length === 0) return head
-    return head + "\n" + lines.join("\n")
-  }
-
   // --------------------------------------------------------- lifecycle
 
   // What this widget has told the service, so a resync never double-counts.
@@ -614,7 +584,13 @@ Panel {
     hasVisualContent: true
     active: root.opened
     useActiveColor: false
-    tooltipText: root.tooltipText
+    // No hover tooltip on purpose. What it said was a second, worse copy of the
+    // panel: the mosaic already shows every state at a glance, and one click
+    // gives the names. What it actually did was flicker — the label rotates
+    // through its metrics every few seconds, the widget's implicit width
+    // changes with the value, and the pointer ends up crossing the button's own
+    // edge, so the host saw exit and enter and rebuilt the tooltip under a
+    // cursor that never moved. Left empty, `Bar.showTooltip` returns early.
     fixedWidth: root.vertical ? root.barSize : content.implicitWidth + Style.space(17)
     fixedHeight: root.barSize
 
