@@ -451,7 +451,10 @@ Item {
       var changes = Docker.stateChanges(previousContainers, next)
       for (var i = 0; i < changes.length; i++) {
         var notification = Docker.changeNotification(changes[i])
-        if (notification) Quickshell.execDetached(Docker.notifyCommand(notification))
+        // Docker.js hands over a key; the sentence is built here, where the
+        // chosen language is known.
+        if (notification) Quickshell.execDetached(
+          Docker.notifyCommand(notification, I18n.t(notification.bodyKey)))
       }
     }
 

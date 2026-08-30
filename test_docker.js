@@ -1595,11 +1595,54 @@ check("containers that appear are not news", () => {
 check("notifications carry the container name and reach the user", () => {
   const change = { container: { name: "web-shop-api-1" }, kind: "unhealthy" }
   const notification = changeNotification(change)
-  const command = notifyCommand(notification)
+  const command = notifyCommand(notification, t(notification.bodyKey))
 
   assert.strictEqual(command[0], "notify-send")
   assert.ok(command.includes("web-shop-api-1"))
   assert.ok(command.includes("critical"))
+})
+
+check("a notification is a key and an urgency, never a sentence", () => {
+  // This is the hole the old test left: it asserted the name and the urgency
+  // and never looked at the body, so four Portuguese sentences sat in Docker.js
+  // and went out to every user, in every language, for as long as the feature
+  // existed. A notification leaves through notify-send, so none of the QML
+  // translation rules were ever going to catch it.
+  for (const kind of ["restarting", "unhealthy", "failed", "degraded", "recovered"]) {
+    const notification = changeNotification({ container: { name: "c" }, kind: kind })
+    assert.ok(notification, kind + " notifies")
+    assert.strictEqual(notification.body, undefined, kind + " carries no prose")
+    assert.strictEqual(notification.bodyKey, "notify." + kind, kind + " carries a key")
+    assert.ok(has(notification.bodyKey), notification.bodyKey + " is in both tables")
+  }
+
+  assert.strictEqual(changeNotification({ container: { name: "c" }, kind: "nonsense" }), null)
+})
+
+check("the notification body follows the chosen language", () => {
+  const notification = changeNotification({ container: { name: "c" }, kind: "failed" })
+
+  try {
+    setLanguage("en")
+    assert.strictEqual(t(notification.bodyKey), "exited with an error")
+    setLanguage("pt")
+    assert.strictEqual(t(notification.bodyKey), "saiu com erro")
+  } finally {
+    setLanguage("en")
+  }
+})
+
+check("no prose is typed straight into the logic", () => {
+  // Docker.js deals in keys and data. The rule already existed; nothing
+  // enforced it, and the notifications broke it in the one place the panel
+  // never renders.
+  const body = fs.readFileSync(__dirname + "/Docker.js", "utf8")
+  const accented = body.split("\n")
+    .map((line, index) => ({ line: line, number: index + 1 }))
+    .filter(entry => /"[^"]*[áàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ][^"]*"/.test(entry.line))
+    .map(entry => entry.number + ": " + entry.line.trim())
+
+  assert.deepStrictEqual(accented, [], "these belong in I18n.js")
 })
 
 

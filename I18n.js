@@ -127,6 +127,17 @@ var STRINGS = {
     "daemon.missing": "docker not found",
     "daemon.stopConfirm": "Stop the {engine} daemon?\nEvery running container stops with it.",
 
+    // notifications
+    //
+    // These leave through notify-send rather than through a Text, so none of
+    // the QML translation rules reach them. They were Portuguese for everyone
+    // until someone running the panel in English noticed.
+    "notify.restarting": "is in a restart loop",
+    "notify.unhealthy": "turned unhealthy",
+    "notify.failed": "exited with an error",
+    "notify.degraded": "changed state",
+    "notify.recovered": "is back to normal",
+
     // gauges
     //
     // CPU and RAM are the same word in both tables, which is exactly why the
@@ -289,6 +300,12 @@ var STRINGS = {
     "daemon.noAccess": "sem acesso ao Docker — o usuário está no grupo 'docker'?",
     "daemon.missing": "docker não encontrado",
     "daemon.stopConfirm": "Parar o daemon do {engine}?\nTodo container em execução para junto.",
+
+    "notify.restarting": "está em loop de restart",
+    "notify.unhealthy": "ficou unhealthy",
+    "notify.failed": "saiu com erro",
+    "notify.degraded": "mudou de estado",
+    "notify.recovered": "voltou ao normal",
 
     "gauge.cpu": "CPU",
     "gauge.ram": "RAM",

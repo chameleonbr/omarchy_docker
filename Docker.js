@@ -2182,21 +2182,36 @@ function classifyChange(was, now) {
   return null
 }
 
-function changeNotification(change) {
-  var name = change.container.name
-  var kind = change.kind
-
-  if (kind === "restarting") return { urgency: "critical", title: name, body: "está em loop de restart" }
-  if (kind === "unhealthy") return { urgency: "critical", title: name, body: "ficou unhealthy" }
-  if (kind === "failed") return { urgency: "critical", title: name, body: "saiu com erro" }
-  if (kind === "degraded") return { urgency: "normal", title: name, body: "mudou de estado" }
-  if (kind === "recovered") return { urgency: "low", title: name, body: "voltou ao normal" }
-  return null
+// A key and an urgency, never a sentence. This file does not know what language
+// the panel is in, and the one time it tried to it shipped four Portuguese
+// notifications to every user — including the ones whose panel was in English,
+// because a notification leaves through notify-send rather than through any
+// Text the translation rules cover.
+var NOTIFICATION_URGENCY = {
+  restarting: "critical",
+  unhealthy: "critical",
+  failed: "critical",
+  degraded: "normal",
+  recovered: "low"
 }
 
-function notifyCommand(notification) {
+function changeNotification(change) {
+  var kind = change.kind
+  var urgency = NOTIFICATION_URGENCY[kind]
+  if (!urgency) return null
+
+  return {
+    urgency: urgency,
+    title: change.container.name,
+    bodyKey: "notify." + kind
+  }
+}
+
+// The body arrives already translated: this file deals in keys, and the caller
+// is the one that knows the language.
+function notifyCommand(notification, body) {
   return ["notify-send", "-a", "Docker", "-u", notification.urgency,
-    notification.title, notification.body]
+    notification.title, String(body || "")]
 }
 
 // Docker emits a burst of events for a single `compose up`; only the ones that
