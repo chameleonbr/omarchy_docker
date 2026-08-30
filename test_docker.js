@@ -1602,6 +1602,30 @@ check("notifications carry the container name and reach the user", () => {
   assert.ok(command.includes("critical"))
 })
 
+check("notifications stay silenced when the user asked for silence", () => {
+  // Omarchy silences everything under Do Not Disturb except what
+  // shouldBypassDnd() lets through, and that rule is
+  //   appName === "notify-send" && urgency === critical
+  // because chat apps abuse critical to force themselves in front of people.
+  //
+  // So the `-a Docker` is what keeps us silenceable. Three of the five
+  // notifications are critical; without the app name they would read as a bare
+  // CLI call and punch straight through a silence someone chose. Verified
+  // against the running shell in both states before this test was written.
+  const critical = ["restarting", "unhealthy", "failed"]
+
+  for (const kind of critical) {
+    const notification = changeNotification({ container: { name: "c" }, kind: kind })
+    const command = notifyCommand(notification, "body")
+
+    assert.strictEqual(notification.urgency, "critical", kind)
+    const app = command.indexOf("-a")
+    assert.ok(app >= 0, kind + " names an app")
+    assert.strictEqual(command[app + 1], "Docker", kind + " is not a bare notify-send")
+    assert.notStrictEqual(command[app + 1], "notify-send", kind + " must not bypass DND")
+  }
+})
+
 check("a notification is a key and an urgency, never a sentence", () => {
   // This is the hole the old test left: it asserted the name and the urgency
   // and never looked at the body, so four Portuguese sentences sat in Docker.js

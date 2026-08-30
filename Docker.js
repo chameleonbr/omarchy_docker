@@ -2209,8 +2209,23 @@ function changeNotification(change) {
 
 // The body arrives already translated: this file deals in keys, and the caller
 // is the one that knows the language.
+//
+// `-a Docker` is not decoration, and it is not there to look tidy in the
+// history. Omarchy's notification service silences everything under Do Not
+// Disturb EXCEPT what `shouldBypassDnd()` lets through, and that rule is
+// `appName === "notify-send" && urgency === critical` — chat apps abuse
+// critical to force themselves in front of people, so the shell also requires
+// the sender to look like a bare CLI call.
+//
+// Three of our five notifications are critical. Drop the `-a` and they stop
+// being "Docker" and start being "notify-send", and a container dying would
+// punch through the silence someone deliberately asked for. Verified against
+// the running shell both ways: with DND on the popup never appears, with it off
+// it does.
+var NOTIFY_APP_NAME = "Docker"
+
 function notifyCommand(notification, body) {
-  return ["notify-send", "-a", "Docker", "-u", notification.urgency,
+  return ["notify-send", "-a", NOTIFY_APP_NAME, "-u", notification.urgency,
     notification.title, String(body || "")]
 }
 

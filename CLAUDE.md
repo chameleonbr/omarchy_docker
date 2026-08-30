@@ -261,6 +261,23 @@ shell every time you run `docker compose up`. Do not merge them.
   rectangles, not nerd-font icons, because a missing glyph renders as nothing
   and the widget looks broken rather than empty.
 
+## Notifications
+
+**`Docker.js` returns a `bodyKey`, never a sentence.** It shipped five
+Portuguese literals once — a notification leaves through `notify-send` rather
+than through a `Text`, so none of the QML translation rules reach it, and a
+correctly translated panel says nothing about the notifications being. The
+sentence is built in `Service.qml`, where the chosen language is known.
+
+**`-a Docker` is what keeps the plugin silenceable.** Omarchy's notification
+service silences everything under Do Not Disturb except what `shouldBypassDnd()`
+allows, and that rule is `appName === "notify-send" && urgency === critical` —
+chat apps abuse critical to force themselves in front of people, so the shell
+also requires the sender to look like a bare CLI call. Three of our five
+notifications are critical. Remove the `-a` while tidying the command up and a
+container dying punches through a silence someone deliberately chose. Verified
+against the running shell in both states: DND on, no popup; DND off, popup.
+
 ## Disk cleanup
 
 `docker system df` is sampled when the popup opens, not on a timer: nobody needs
