@@ -2058,6 +2058,40 @@ check("the handoff carries the language the widget is set to", () => {
     askAgentStackCommand("/x", { project: "a", loose: false }, 200)[3], "auto")
 })
 
+check("no prose is typed straight into the panel", () => {
+  // "DISCO" sat next to "CPU" and "RAM" as a literal for months. The two either
+  // side are the same word in both languages, so the odd one out looked like it
+  // belonged — and English users read a Portuguese gauge.
+  //
+  // Icon glyphs and "—" are literals too and are meant to be: the rule is that
+  // anything with a letter in it comes from I18n.
+  const body = fs.readFileSync(__dirname + "/Panel.qml", "utf8")
+  const bindings = /^\s*(label|text|title|placeholderText|tooltipText|badge|message)\s*:\s*"([^"]*)"/gm
+
+  const typed = []
+  let match
+  while ((match = bindings.exec(body)) !== null) {
+    if (/[A-Za-z]/.test(match[2])) typed.push(match[1] + ': "' + match[2] + '"')
+  }
+
+  assert.deepStrictEqual(typed, [], "these belong in I18n.js")
+})
+
+check("the gauges read their labels from the table", () => {
+  try {
+    setLanguage("en")
+    assert.strictEqual(t("gauge.disk"), "DISK")
+    assert.strictEqual(t("gauge.cpu"), "CPU")
+
+    setLanguage("pt")
+    assert.strictEqual(t("gauge.disk"), "DISCO")
+    // Same word in both, which is how the third one hid.
+    assert.strictEqual(t("gauge.cpu"), "CPU")
+  } finally {
+    setLanguage("en")
+  }
+})
+
 check("both agent scripts carry a prompt in each language", () => {
   const scripts = ["bin/omarchy-docker-ask-agent", "bin/omarchy-docker-ask-agent-stack"]
 

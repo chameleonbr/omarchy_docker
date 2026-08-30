@@ -1336,7 +1336,7 @@ Panel {
 
         Gauge {
           width: (parent.width - Style.space(40)) / 3
-          label: "CPU"
+          label: root.tr("gauge.cpu")
           value: root.service ? root.service.gauges.cpu.value : 0
           max: 100
           text: root.service ? root.service.gauges.cpu.text : "—"
@@ -1347,7 +1347,7 @@ Panel {
 
         Gauge {
           width: (parent.width - Style.space(40)) / 3
-          label: "RAM"
+          label: root.tr("gauge.ram")
           value: root.service ? root.service.gauges.memory.value : 0
           max: root.service ? root.service.gauges.memory.max : 0
           text: root.service ? root.service.gauges.memory.text : "—"
@@ -1358,7 +1358,7 @@ Panel {
 
         Gauge {
           width: (parent.width - Style.space(40)) / 3
-          label: "DISCO"
+          label: root.tr("gauge.disk")
           value: root.service ? root.service.gauges.disk.value : 0
           max: root.service ? root.service.gauges.disk.max : 0
           text: root.service ? root.service.gauges.disk.text : "—"

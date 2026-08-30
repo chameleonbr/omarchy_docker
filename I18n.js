@@ -127,6 +127,15 @@ var STRINGS = {
     "daemon.missing": "docker not found",
     "daemon.stopConfirm": "Stop the {engine} daemon?\nEvery running container stops with it.",
 
+    // gauges
+    //
+    // CPU and RAM are the same word in both tables, which is exactly why the
+    // third one shipped as "DISCO" to English users for months: two of the
+    // three needed no translation, so nobody looked at the one that did.
+    "gauge.cpu": "CPU",
+    "gauge.ram": "RAM",
+    "gauge.disk": "DISK",
+
     // cleanup
     "cleanup.title": "Reclaimable space",
     "cleanup.reclaimable": "{size} reclaimable",
@@ -280,6 +289,10 @@ var STRINGS = {
     "daemon.noAccess": "sem acesso ao Docker — o usuário está no grupo 'docker'?",
     "daemon.missing": "docker não encontrado",
     "daemon.stopConfirm": "Parar o daemon do {engine}?\nTodo container em execução para junto.",
+
+    "gauge.cpu": "CPU",
+    "gauge.ram": "RAM",
+    "gauge.disk": "DISCO",
 
     "cleanup.title": "Espaço recuperável",
     "cleanup.reclaimable": "{size} recuperáveis",
