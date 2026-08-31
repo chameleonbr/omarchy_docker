@@ -2144,42 +2144,68 @@ function logsCommand(id, tail) {
 // rather than by watching the event stream: events fire for every intermediate
 // step of a restart, and the only thing worth a notification is where a
 // container ended up.
-function stateChanges(before, after) {
-  var previous = {}
-  for (var i = 0; i < before.length; i++) previous[before[i].id] = before[i]
-
-  var changes = []
-
-  for (var j = 0; j < after.length; j++) {
-    var now = after[j]
-    var was = previous[now.id]
-    if (!was) continue // new containers are not news
-
-    if (was.cell === now.cell && was.state === now.state) continue
-
-    var change = classifyChange(was, now)
-    if (change) changes.push({ container: now, kind: change })
-  }
-
-  return changes
+// Which flavour of bad a container is in right now. Order matters: a container
+// that is restarting is reported as restarting even if it is also unhealthy,
+// because the loop is the thing to fix first.
+function badKind(container) {
+  if (String(container.state) === "restarting") return "restarting"
+  if (String(container.health) === "unhealthy") return "unhealthy"
+  if (String(container.state) === "exited") return "failed"
+  return "degraded"
 }
 
-function classifyChange(was, now) {
-  var wasBad = was.cell === "bad" || was.cell === "warn"
-  var isBad = now.cell === "bad" || now.cell === "warn"
+function isBadCell(cell) {
+  return cell === "bad" || cell === "warn"
+}
 
-  if (!wasBad && isBad) {
-    if (now.state === "restarting") return "restarting"
-    if (now.health === "unhealthy") return "unhealthy"
-    if (now.state === "exited") return "failed"
-    return "degraded"
+// Comparing two snapshots answers "what changed". It does not answer "is this
+// worth interrupting someone about", and that was the bug: a container in a
+// restart loop passes through `running` between restarts, which read as a
+// recovery, so a flapping container announced "in a restart loop" and "back to
+// normal" alternately for as long as it flapped — about twice a minute, during
+// the exact incident these notifications exist for. The recovery was also a
+// lie: it had not recovered, it just had not fallen over yet.
+//
+// Answering it needs memory that a pair of snapshots does not carry, so the
+// caller keeps `memo` and hands it back. Two rules:
+//
+//   - the same condition is never announced twice running. It is still true;
+//     saying it again tells nobody anything.
+//   - a recovery needs two consecutive good reads. One good read is the gap
+//     between two restarts, and mistaking that for the end of them is what
+//     produced the alternating pair.
+//
+// Everything here is pure, so the whole flap sequence is a unit test.
+function notifications(containers, memo) {
+  var previous = memo || {}
+  var next = {}
+  var out = []
+
+  for (var i = 0; i < containers.length; i++) {
+    var container = containers[i]
+    var prior = previous[container.id] || { kind: "", good: 0 }
+
+    if (isBadCell(container.cell)) {
+      var kind = badKind(container)
+      if (prior.kind !== kind) out.push({ container: container, kind: kind })
+      next[container.id] = { kind: kind, good: 0 }
+      continue
+    }
+
+    var good = prior.good + 1
+
+    // Only something that was announced as broken can be announced as fixed.
+    // Otherwise every container anyone starts by hand is a recovery.
+    if (prior.kind && good >= 2 && String(container.state) === "running") {
+      out.push({ container: container, kind: "recovered" })
+      next[container.id] = { kind: "", good: good }
+      continue
+    }
+
+    next[container.id] = { kind: prior.kind, good: good }
   }
 
-  // Recovery is worth saying exactly once, and only for something that had
-  // actually gone wrong — not for every container someone starts by hand.
-  if (wasBad && !isBad && now.state === "running") return "recovered"
-
-  return null
+  return { announce: out, memo: next }
 }
 
 // A key and an urgency, never a sentence. This file does not know what language

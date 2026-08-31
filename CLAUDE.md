@@ -263,6 +263,25 @@ shell every time you run `docker compose up`. Do not merge them.
 
 ## Notifications
 
+**A condition is announced once, not on every read.** Comparing two snapshots
+answers "what changed"; it cannot answer "is this worth interrupting someone
+about", and that difference was a real bug. A container in a restart loop passes
+through `running` between restarts, which read as a recovery, so a flapping
+container alternated "in a restart loop" and "back to normal" for as long as it
+flapped — about twice a minute, during the exact incident the notifications
+exist for. The recovery was also a lie: it had not recovered, it just had not
+fallen over yet.
+
+`Docker.notifications(containers, memo)` owns the rules and is pure, so the
+whole flap is a unit test; `Service.qml` only keeps the memo. Two rules, both
+needing memory a pair of snapshots does not carry: the same kind is never
+announced twice running, and a recovery needs **two** consecutive good reads,
+because one good read is the gap between two restarts.
+
+The memo advances even when notifications are disabled. Otherwise turning them
+off banks up everything that happened and delivers it on the way back in.
+
+
 **`Docker.js` returns a `bodyKey`, never a sentence.** It shipped five
 Portuguese literals once — a notification leaves through `notify-send` rather
 than through a `Text`, so none of the QML translation rules reach it, and a

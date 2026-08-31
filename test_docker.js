@@ -1542,54 +1542,90 @@ function containersWith(overrides) {
       : container)
 }
 
-check("nothing changing produces no noise", () => {
-  const containers = parsePs(psFixture)
-  assert.deepStrictEqual(stateChanges(containers, containers), [])
+check("a healthy snapshot announces nothing", () => {
+  const containers = parsePs(psFixture).map(c => ({ ...c, cell: "ok", state: "running" }))
+  const first = notifications(containers, {})
+  assert.deepStrictEqual(first.announce, [], "nothing was broken")
+
+  const again = notifications(containers, first.memo)
+  assert.deepStrictEqual(again.announce, [], "and still is not")
 })
 
-check("a container going bad is worth interrupting for", () => {
-  const before = containersWith({ "web-shop-cache-1": { state: "running", cell: "ok" } })
-  const after = containersWith({
-    "web-shop-cache-1": { state: "running", health: "unhealthy", cell: "warn" }
-  })
+check("a container that breaks is announced once, not on every read", () => {
+  const ok = [{ id: "a", name: "api", cell: "ok", state: "running", health: "healthy" }]
+  const bad = [{ id: "a", name: "api", cell: "bad", state: "exited", health: "none" }]
 
-  const changes = stateChanges(before, after)
-  assert.strictEqual(changes.length, 1)
-  assert.strictEqual(changes[0].kind, "unhealthy")
-  assert.strictEqual(changeNotification(changes[0]).urgency, "critical")
+  let memo = notifications(ok, {}).memo
+  const broke = notifications(bad, memo)
+  assert.strictEqual(broke.announce.length, 1)
+  assert.strictEqual(broke.announce[0].kind, "failed")
+
+  // Still broken on the next read. It is the same condition; saying it again
+  // tells nobody anything.
+  const still = notifications(bad, broke.memo)
+  assert.deepStrictEqual(still.announce, [], "no repeat while the condition holds")
 })
 
-check("a restart loop reports as a loop, not as a failure", () => {
-  const before = containersWith({ "web-shop-proxy-1": { state: "running", cell: "ok" } })
-  const after = containersWith({ "web-shop-proxy-1": { state: "restarting", cell: "warn" } })
+check("a restart loop is one condition, not a notification every minute", () => {
+  // The bug this replaced, reproduced from the real history: a flapping
+  // container passes through `running` between restarts, that read as a
+  // recovery, and the pair "in a restart loop" / "back to normal" repeated for
+  // as long as the flap lasted — during the exact incident the notification
+  // exists for. The recovery was a lie too: it had not recovered, it just had
+  // not fallen over yet.
+  const restarting = [{ id: "f", name: "flaky", cell: "warn", state: "restarting", health: "none" }]
+  const up = [{ id: "f", name: "flaky", cell: "ok", state: "running", health: "none" }]
 
-  assert.strictEqual(stateChanges(before, after)[0].kind, "restarting")
+  let memo = notifications(up, {}).memo
+  const announced = []
+
+  for (let cycle = 0; cycle < 6; cycle++) {
+    for (const snapshot of [restarting, up]) {
+      const step = notifications(snapshot, memo)
+      memo = step.memo
+      for (const change of step.announce) announced.push(change.kind)
+    }
+  }
+
+  assert.deepStrictEqual(announced, ["restarting"],
+    "six flaps, one notification — got: " + announced.join(", "))
 })
 
-check("recovery is announced once, and quietly", () => {
-  const before = containersWith({ "web-shop-cache-1": { state: "exited", cell: "bad" } })
-  const after = containersWith({ "web-shop-cache-1": { state: "running", cell: "ok" } })
+check("a real recovery still gets announced, once it holds", () => {
+  const bad = [{ id: "a", name: "api", cell: "bad", state: "exited", health: "none" }]
+  const up = [{ id: "a", name: "api", cell: "ok", state: "running", health: "healthy" }]
 
-  const change = stateChanges(before, after)[0]
-  assert.strictEqual(change.kind, "recovered")
-  assert.strictEqual(changeNotification(change).urgency, "low")
+  let memo = notifications(bad, {}).memo
 
-  // And not again on the next round, because nothing changed.
-  assert.deepStrictEqual(stateChanges(after, after), [])
+  // One good read is the gap between two restarts, so it is not enough.
+  const firstGood = notifications(up, memo)
+  assert.deepStrictEqual(firstGood.announce, [], "one good read proves nothing")
+
+  const secondGood = notifications(up, firstGood.memo)
+  assert.strictEqual(secondGood.announce.length, 1)
+  assert.strictEqual(secondGood.announce[0].kind, "recovered")
+
+  // And exactly once.
+  const third = notifications(up, secondGood.memo)
+  assert.deepStrictEqual(third.announce, [], "recovery is said once")
 })
 
 check("a container someone just started is not a recovery", () => {
-  // It was stopped cleanly, so there was nothing to recover from.
-  const before = containersWith({ "web-shop-migrate-1": { state: "exited", cell: "idle" } })
-  const after = containersWith({ "web-shop-migrate-1": { state: "running", cell: "ok" } })
-
-  assert.deepStrictEqual(stateChanges(before, after), [])
+  const up = [{ id: "n", name: "new", cell: "ok", state: "running", health: "healthy" }]
+  let memo = notifications(up, {}).memo
+  for (let i = 0; i < 4; i++) {
+    const step = notifications(up, memo)
+    memo = step.memo
+    assert.deepStrictEqual(step.announce, [], "never broken, never recovered")
+  }
 })
 
-check("containers that appear are not news", () => {
-  const before = parsePs(psFixture).slice(1)
-  const after = parsePs(psFixture)
-  assert.deepStrictEqual(stateChanges(before, after), [])
+check("the worst condition is the one named", () => {
+  // Restarting outranks unhealthy: the loop is what you fix first.
+  assert.strictEqual(badKind({ state: "restarting", health: "unhealthy" }), "restarting")
+  assert.strictEqual(badKind({ state: "running", health: "unhealthy" }), "unhealthy")
+  assert.strictEqual(badKind({ state: "exited", health: "none" }), "failed")
+  assert.strictEqual(badKind({ state: "paused", health: "none" }), "degraded")
 })
 
 check("notifications carry the container name and reach the user", () => {

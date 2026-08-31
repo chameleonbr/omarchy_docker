@@ -437,28 +437,36 @@ Item {
   property bool notificationsEnabled: true
   // The previous snapshot, kept only to diff against. Empty on the first read,
   // which is what stops a shell restart from announcing everything at once.
-  property var previousContainers: []
+  // What each container was last announced as, and how many good reads it has
+  // had since. Docker.notifications() owns the rules; this only holds the memory
+  // they need, because two snapshots cannot tell a recovery from the pause
+  // between two restarts.
+  property var notifyMemo: ({})
   property bool seenFirstSnapshot: false
 
   function announceChanges(next) {
+    // The first read after the shell starts is silent — otherwise every restart
+    // of the shell announces everything that was already broken.
     if (!seenFirstSnapshot) {
       seenFirstSnapshot = true
-      previousContainers = next
+      notifyMemo = Docker.notifications(next, {}).memo
       return
     }
 
-    if (notificationsEnabled) {
-      var changes = Docker.stateChanges(previousContainers, next)
-      for (var i = 0; i < changes.length; i++) {
-        var notification = Docker.changeNotification(changes[i])
-        // Docker.js hands over a key; the sentence is built here, where the
-        // chosen language is known.
-        if (notification) Quickshell.execDetached(
-          Docker.notifyCommand(notification, I18n.t(notification.bodyKey)))
-      }
-    }
+    var result = Docker.notifications(next, notifyMemo)
+    notifyMemo = result.memo
 
-    previousContainers = next
+    // The memo advances either way: turning notifications off should silence
+    // them, not bank them up for whenever they are turned back on.
+    if (!notificationsEnabled) return
+
+    for (var i = 0; i < result.announce.length; i++) {
+      var notification = Docker.changeNotification(result.announce[i])
+      // Docker.js hands over a key; the sentence is built here, where the
+      // chosen language is known.
+      if (notification) Quickshell.execDetached(
+        Docker.notifyCommand(notification, I18n.t(notification.bodyKey)))
+    }
   }
 
   // ----------------------------------------------------------- actions
