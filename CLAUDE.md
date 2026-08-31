@@ -43,7 +43,7 @@ grim -g "<x>,<y> <w>x30" - | magick - -scale 800% /tmp/bar.png
 
 ## Checks
 
-`node test_docker.js` — 205 checks, plain node, no framework, no network, no daemon.
+`node test_docker.js` — 207 checks, plain node, no framework, no network, no daemon.
 
 `Docker.js` is a QML `.js` resource and cannot carry `export`, so the test file
 `eval`s it into scope. Keep `Docker.js` free of QML types (`Process`, `Timer`,
@@ -592,6 +592,19 @@ per container for a stack bundle so one noisy service cannot crowd out the
 rest — and the single-container prompt says so when it happens, because a log
 that stops mid-sentence otherwise reads as a container that stopped mid-sentence.
 `XDG_RUNTIME_DIR` is usually a tmpfs, so this is memory, not disk.
+
+**The warning goes first, before any interpolation.** The stack prompt used to
+open with `The "$project" stack is misbehaving` and put the do-not-trust
+paragraph underneath it. `$project` is a compose label, so a newline in it wrote
+whole lines into the prompt ahead of the only text saying not to trust them.
+Sanitizing the value fixes that instance; putting the warning first is what
+makes the next forgotten value land somewhere harmless.
+
+**`clean()` every value, including the ones that arrive by argv.** That is how
+this was missed: the stack script sanitized everything it read from an
+`inspect`, and took `$project` straight from `$1`, where the widget had handed
+it the label verbatim. A test now asserts nothing interpolates before the
+warning, in either script, in either language.
 
 **A prompt is an instruction channel, so untrusted text cannot go in raw.** The
 agent scripts interpolate labels, and the log they point the agent at is written

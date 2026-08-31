@@ -2159,6 +2159,47 @@ check("the gauges read their labels from the table", () => {
   }
 })
 
+check("nothing untrusted is interpolated before the warning that names it", () => {
+  // The first prompt-injection fix sanitized every value read from an inspect
+  // and missed the one that arrives as an argument: the stack script took
+  // $project straight from argv, and the widget hands it the compose label
+  // verbatim. A label with newlines wrote whole lines into the prompt AHEAD of
+  // the paragraph telling the agent not to trust them, which is the one place
+  // where the warning cannot do its job.
+  //
+  // Two fixes, and the test checks both, because either alone is a single point
+  // of failure: the value is sanitized, AND the warning now precedes every
+  // interpolation, so the next value someone forgets still lands after it.
+  const scripts = ["bin/omarchy-docker-ask-agent", "bin/omarchy-docker-ask-agent-stack"]
+
+  for (const path of scripts) {
+    const body = fs.readFileSync(__dirname + "/" + path, "utf8")
+
+    for (const marker of ["IMPORTANT, read this first", "IMPORTANTE, leia antes de tudo"]) {
+      const start = body.indexOf(marker)
+      assert.ok(start > 0, path + " carries: " + marker)
+
+      // Everything between the heredoc opening and the warning must be static.
+      const opening = body.lastIndexOf("cat <<PROMPT", start)
+      assert.ok(opening > 0, path + " warns inside a prompt")
+      const preamble = body.slice(opening, start)
+      assert.ok(!/\$\{?[A-Za-z_]/.test(preamble),
+        path + " interpolates nothing before the warning:\n" + preamble)
+    }
+  }
+})
+
+check("the stack script sanitizes the name it is handed", () => {
+  // $project is a compose label like every other value in that prompt; it just
+  // arrives by argv instead of by inspect, which is how it was missed.
+  const body = fs.readFileSync(__dirname + "/bin/omarchy-docker-ask-agent-stack", "utf8")
+  assert.ok(/project=\$\(clean "\$project"\)/.test(body), "the argument goes through clean()")
+
+  const cleanAt = body.indexOf('project=$(clean "$project")')
+  const promptAt = body.indexOf("cat <<PROMPT")
+  assert.ok(cleanAt > 0 && cleanAt < promptAt, "and does so before any prompt is built")
+})
+
 check("both agent scripts carry a prompt in each language", () => {
   const scripts = ["bin/omarchy-docker-ask-agent", "bin/omarchy-docker-ask-agent-stack"]
 
