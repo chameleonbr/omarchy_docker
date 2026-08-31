@@ -43,7 +43,7 @@ grim -g "<x>,<y> <w>x30" - | magick - -scale 800% /tmp/bar.png
 
 ## Checks
 
-`node test_docker.js` — 190 checks, plain node, no framework, no network, no daemon.
+`node test_docker.js` — 205 checks, plain node, no framework, no network, no daemon.
 
 `Docker.js` is a QML `.js` resource and cannot carry `export`, so the test file
 `eval`s it into scope. Keep `Docker.js` free of QML types (`Process`, `Timer`,

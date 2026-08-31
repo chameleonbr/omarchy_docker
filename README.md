@@ -5,6 +5,14 @@ CPU and memory cycle beside it. Clicking gets you stacks, restart and logs —
 and hands anything deeper to lazydocker, already scoped to the stack you
 clicked.
 
+![The widget in the bar: one cell per container, grouped by stack](bar.png)
+
+That is a whole development machine — every container, every stack — in about
+the width of two icons. The wider gaps mark where one stack ends and the next
+begins, so you can point at a stack rather than hunt for it; the colours say how
+each container is doing. Nothing in it is a number you have to stop and read,
+which is the entire idea.
+
 ![Stacks, containers and per-container actions in the Omarchy bar](preview.png)
 
 ## Why a mosaic
@@ -97,10 +105,14 @@ already up, no remove on something running — from logs, a shell, unpause,
 start/stop, restart, remove, and one button that hands its log to your coding
 agent. Published ports are clickable and open `http://localhost:<port>`.
 
-**Starting a stack runs `compose up -d`, not `compose start`.** `start` cannot
-bring back a container that was removed and ignores edits to the compose file,
-which is not what anyone means by "start this stack". Stopping stays `stop` —
-never `down`, which would delete the containers and their networks.
+**A stack action names its containers, not `compose`.** It used to shell out to
+`compose up -d`, which meant telling compose where the project lived — and the
+only record of that is a label, which the image writes rather than you. Pointing
+`compose -f` at a file an image chose and then asking it to bring the stack up
+hands container creation to whoever built that image. The container ids come
+from the listing that drew the stack, so they always exist, and restarting
+exactly those containers is what "restart stack" means. `down` is never run: it
+would delete the containers and their networks.
 
 ## Reclaiming disk
 
@@ -142,6 +154,10 @@ interrupting someone for is where the container ended up. The first read after
 the shell starts is silent, so a restart never announces everything at once. A
 container someone stopped cleanly and started again is not a recovery, and says
 nothing.
+
+**Do Not Disturb is respected.** Silence someone asked for is silence, so
+nothing here bypasses it — not even the ones marked critical. To stop them
+entirely, turn the `notifications` setting off.
 
 ## Asking the agent
 
@@ -292,7 +308,7 @@ is 30 seconds for a reason.
 node test_docker.js
 ```
 
-190 checks, no framework, no network, no daemon. `fixtures/` holds real
+205 checks, no framework, no network, no daemon. `fixtures/` holds real
 `docker ps` and `docker stats` output; the tests run against that.
 
 See `CLAUDE.md` for how the pieces fit and what has already bitten.
@@ -324,9 +340,25 @@ Deliberate choices, rather than accidents:
   them to anything — a pulled image is not a trusted source. Every label-derived
   string is rendered as plain text, so a crafted one cannot be interpreted as
   markup, and every one that reaches a shell is quoted.
+- **A label is not a path.** `com.docker.compose.project.working_dir` and
+  `.config_files` are labels too, so an image can name any directory it likes
+  and a plain `LABEL` line in a Dockerfile is enough — running the image is the
+  whole precondition. Every label-derived path is validated before use, and the
+  agent handoff additionally requires a real directory, not a symlink, owned by
+  you, that actually holds a compose file.
 - **Container logs are written with `umask 077`** into a directory checked to be
-  yours, because logs routinely carry connection strings and tokens. The agent
+  yours, because logs routinely carry connection strings and tokens. The file is
+  created rather than truncated, so it is always one this run made. The agent
   handoff writes there; nothing else reads it.
+- **Untrusted text never poses as an instruction.** The agent handoff quotes
+  labels and points the agent at a log the container wrote. Both are fenced,
+  flattened to one bounded line, and preceded by a note telling the agent they
+  are data that may be pretending otherwise.
+- **Everything the daemon prints is bounded before it is read**, not after it is
+  parsed — each one-shot command runs under `head -c` so the shell never holds
+  an unbounded payload, and the long-lived event stream asks for two fields
+  rather than the labels it does not need. Logs are bounded by bytes as well as
+  by lines: `--tail` counts lines, and one line has no length.
 
 Found something? Open an issue.
 
