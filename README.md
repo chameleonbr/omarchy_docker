@@ -8,10 +8,45 @@ clicked.
 ![The widget in the bar: one cell per container, grouped by stack](bar.png)
 
 That is a whole development machine — every container, every stack — in about
-the width of two icons. The wider gaps mark where one stack ends and the next
-begins, so you can point at a stack rather than hunt for it; the colours say how
-each container is doing. Nothing in it is a number you have to stop and read,
-which is the entire idea.
+the width of two icons.
+
+## Reading it
+
+![The parts of the widget, called out](bar-anatomy.png)
+
+**① A cell is a container.** Not a stack, not a service — one running thing, one
+square. The count is the shape, so you never read a number to know how much is
+up.
+
+**The colour is the state**, and there are only four, because a legend you have
+to recall is a legend that does not work:
+
+| Colour | Meaning |
+|---|---|
+| foreground | running, healthy or without a healthcheck |
+| accent | unhealthy, restarting or paused |
+| urgent | exited with a non-zero code, or dead |
+| dimmed | stopped cleanly, or created and never started |
+
+**② and ③ — the gaps carry the grouping.** Containers of one compose stack fill
+their own columns top to bottom, and a wider gap marks where that stack ends.
+That is the whole reason you can point at a stack in a strip this small: without
+the wider gap, adjacency is not separation and the mosaic is just confetti.
+
+Cells never move when a container changes state. The order is `(project,
+service, name)` and nothing sorts by health, because a cell that jumps when
+something breaks destroys the one thing the mosaic is for — knowing which cell is
+which without reading anything.
+
+**④ The label is one metric at a time**, rotating. Pick which ones with the
+`metric*` settings; scroll the widget to skip ahead without waiting. It reserves
+the width of the widest value it can show, so the bar never shifts as the number
+changes.
+
+**Nothing appears on hover.** The mosaic is the summary; a tooltip would be a
+second, worse copy of the popup.
+
+Click it and you get the rest:
 
 ![Stacks, containers and per-container actions in the Omarchy bar](preview.png)
 
@@ -24,11 +59,6 @@ in `Restarting` sits there unnoticed for hours.
 So the widget shows no number you have to read. The shape tells you how many
 containers there are, the colours tell you how they are doing, and the one cell
 that pulses is the one that needs you.
-
-Containers of the same compose stack sit together in their own block of
-columns, filled top to bottom, with a wider gap marking where one stack ends and
-the next begins. The blocks are what let you point at a stack; without them
-adjacency is not separation.
 
 **Cell size is the lever that matters.** A smaller cell does not merely shrink
 the mosaic — it fits another row into the same bar, and the width falls away
@@ -56,17 +86,9 @@ than stretched — a wider cell would look like it meant something (a bigger
 stack? more containers?) when it means nothing. Position and colour carry the
 information; size and shape carry none.
 
-**Cells never move.** Ordered by project, then service, then name, with
-containers started outside compose last. The order never depends on state, so a
-cell stays put when its stack breaks. The popup does sort degraded stacks to the
-top, because that is a list you read rather than a shape you recognise.
-
-| Colour | Meaning |
-|---|---|
-| foreground | running, healthy or without a healthcheck |
-| accent | unhealthy, restarting or paused |
-| urgent | exited with a non-zero code, or dead |
-| dimmed | stopped cleanly, or created and never started |
+**The popup is allowed to reorder; the mosaic is not.** Degraded stacks sort to
+the top of the list, because a list is something you read. A shape is something
+you recognise, and it only works if it stays where you left it.
 
 ## Install
 
