@@ -141,6 +141,30 @@ Item {
     }
   }
 
+  // Whether this session has to elevate to reach the daemon. Sampled from
+  // omarchy-sudo-docker rather than by testing group membership, because that
+  // is the contract the shell asks every one of its own tools to use — and it
+  // answers for THIS session, which differs from the account's groups in the
+  // window between opting in and the reboot that applies it.
+  //
+  // Defaults to false so a machine without the helper behaves as it always did.
+  property bool needsSudo: false
+
+  Process {
+    id: accessCheck
+    command: Docker.daemonAccessCommand()
+    // Exit 0 means "sudo is needed". A missing helper is not an answer, so it
+    // leaves the assumption alone rather than declaring the daemon unreachable.
+    onExited: function(exitCode) {
+      if (exitCode === 0 || exitCode === 1) root.needsSudo = exitCode === 0
+    }
+  }
+
+  function checkAccess() {
+    if (accessCheck.running) return
+    accessCheck.running = true
+  }
+
   function applyPs(text, exitCode) {
     root.loaded = true
 
@@ -149,9 +173,14 @@ Item {
       // and painting the second when the first is true makes the widget lie.
       // 141 is neither: it is the byte ceiling closing the pipe, and what came
       // through before it still describes real containers.
+      //
+      // A socket we were never given is a third state again. Re-ask before
+      // naming it: the read is how we find out, and the answer decides between
+      // "your daemon is down" and "you do not have a key to it".
       root.daemonOk = false
-      root.errorText = describeFailure(exitCode)
       root.containers = []
+      root.checkAccess()
+      root.errorText = describeFailure(exitCode)
       return
     }
 
@@ -165,9 +194,10 @@ Item {
   }
 
   function describeFailure(exitCode) {
-    // 126/127 are the shell's "cannot execute"; anything else from the engine
-    // with no output is almost always the socket.
-    return I18n.t(exitCode === 127 ? "daemon.missing" : "daemon.noAccess")
+    // 127 is the shell's "cannot execute". Everything else is either a daemon
+    // that is not running or one this session may not talk to, and those two
+    // send someone to fix entirely different things.
+    return I18n.t(Docker.daemonFailureKey(exitCode, root.needsSudo))
   }
 
   // ------------------------------------------------------ event stream
@@ -571,7 +601,7 @@ Item {
   // already open instead of stacking another terminal on top of it.
   function openLazydocker(group, monitor) {
     focusMonitor(monitor)
-    launch(Docker.lazydockerCommand(group))
+    launch(Docker.lazydockerCommand(group, root.needsSudo))
   }
 
   readonly property string askAgentScript: scriptPath("bin/omarchy-docker-ask-agent")
@@ -791,6 +821,7 @@ Item {
 
   Component.onCompleted: {
     applyLanguage(languagePreference)
+    checkAccess()
     refresh()
     eventsProcess.running = true
   }

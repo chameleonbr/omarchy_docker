@@ -43,7 +43,7 @@ grim -g "<x>,<y> <w>x30" - | magick - -scale 800% /tmp/bar.png
 
 ## Checks
 
-`node test_docker.js` — 207 checks, plain node, no framework, no network, no daemon.
+`node test_docker.js` — 214 checks, plain node, no framework, no network, no daemon.
 
 `Docker.js` is a QML `.js` resource and cannot carry `export`, so the test file
 `eval`s it into scope. Keep `Docker.js` free of QML types (`Process`, `Timer`,
@@ -523,7 +523,35 @@ articles in both languages.
 
 ## Trust model
 
-The plugin runs as the user, through the `docker` group. No root, no polkit.
+The plugin runs as the user. No root, no setuid, and no elevation of its own.
+
+**Omarchy leaves users out of the `docker` group on purpose, and the plugin must
+work on that default.** The group is passwordless root — a container can
+bind-mount `/` and rewrite the host — and the shell's own warning names "a
+single rogue script, dependency, or plugin running as you" as the threat. That
+is us. A widget whose only working configuration is "grant everything running as
+you passwordless root" is applying pressure through convenience, so:
+
+- **Nothing elevates on the poll path.** Reads run every 60s plus the event
+  stream; a `pkexec` there is an authentication dialog on the plugin's schedule
+  rather than the user's. Reads fail and the widget says why.
+- **`omarchy-sudo-docker` answers whether we need sudo**, never `id -nG`. It is
+  the shell's own contract, and it answers for THIS session — which differs from
+  the account's groups in the window between opting in and the reboot.
+- **`daemon.noAccess` is a third state**, distinct from a daemon that is down and
+  from a machine with no containers. The old text asked "is your user in the
+  'docker' group?", which on the current default is coaching someone towards
+  passwordless root.
+- **Controls that cannot work are hidden**, not left to fail: starting the system
+  daemon does not hand you its socket.
+- **The lazydocker button delegates to `omarchy-launch-docker-tui`** when we have
+  no key. That costs the per-stack scoping and is worth it — our own `pkexec`
+  would rebuild the shortcut Omarchy just closed, with none of the warning.
+- **The plugin ships no escalation.** No `usermod`, no `gpasswd`, and it never
+  runs the opt-in for the user. A test asserts it.
+
+Rootless Docker is the recommended way to get the full widget: nothing here
+names a socket path, so `DOCKER_HOST` is followed and it works unchanged.
 
 **Image labels are hostile input.** `com.docker.compose.project` and `.service`
 come from labels, and any image can set them to anything — Docker rejects a `<`

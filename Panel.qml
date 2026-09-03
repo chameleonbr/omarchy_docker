@@ -379,6 +379,11 @@ Panel {
     : { samples: 0 }
   readonly property bool daemonOk: service ? service.daemonOk : true
 
+  // This session cannot reach the socket. Different from a daemon that is down:
+  // starting one would not hand us a key, so the controls that offer to are
+  // hidden rather than left to fail.
+  readonly property bool daemonLocked: service ? service.needsSudo : false
+
   // The mosaic fills the bar's icon area vertically and grows sideways. How far
   // sideways is capped by a width budget rather than a cell count: the budget
   // is the thing the user actually cares about, and it adapts on its own to a
@@ -1272,6 +1277,10 @@ Panel {
           spacing: Style.space(2)
 
           PanelActionButton {
+            // Every control looking live and doing nothing is this plugin's
+            // most-repeated failure. Without a key to the socket, neither of
+            // these can work.
+            visible: !root.daemonLocked
             iconText: root.daemonOk ? "󰓛" : "󰐊"
             tooltipText: root.daemonOk
               ? root.tr("tip.daemonStop")
@@ -1289,6 +1298,7 @@ Panel {
           }
 
           PanelActionButton {
+            visible: !root.daemonLocked
             iconText: root.service && root.service.daemonAutostart === "enabled" ? "󰐥" : "󰤄"
             tooltipText: root.service && root.service.daemonAutostart === "enabled"
               ? root.tr("tip.autostartOn")
@@ -1470,6 +1480,23 @@ Panel {
           // A list of zero containers with a dozen dead buttons is worse than
           // one sentence saying why there is nothing here.
           text: root.service ? root.service.errorText : ""
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        // The two ways forward, said once, where someone is already looking for
+        // why the list is empty. Not a notification and not repeated: this is a
+        // machine configuration, not an incident.
+        //
+        // In the chrome rather than in the list, because a panel with no daemon
+        // hides its gauges and tabs, the list is left about two lines tall, and
+        // a hint that has to be scrolled to is a hint nobody reads.
+        Text {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          visible: root.daemonLocked
+          text: root.tr("daemon.noAccessHint")
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

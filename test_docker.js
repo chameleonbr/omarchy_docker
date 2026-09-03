@@ -1638,6 +1638,118 @@ check("notifications carry the container name and reach the user", () => {
   assert.ok(command.includes("critical"))
 })
 
+// ------------------------------------------------- reaching the daemon
+//
+// Omarchy leaves users out of the docker group by default: the group is
+// passwordless root, and their warning names plugins as the risk. So this
+// plugin must work on that default, must not push anyone off it, and must never
+// be the thing that asks for the password.
+
+check("the plugin asks the shell whether it needs sudo, not the group list", () => {
+  // omarchy-sudo-docker is the shell's own contract for the question, and its
+  // comment says everything making this choice asks there rather than testing
+  // membership itself — it answers for THIS session, which differs from the
+  // account's groups between opting in and the reboot that applies it.
+  assert.deepStrictEqual(daemonAccessCommand(), ["omarchy-sudo-docker"])
+
+  const body = fs.readFileSync(__dirname + "/Docker.js", "utf8")
+  assert.ok(!/\bid -nG\b/.test(body), "never reads the group list directly")
+})
+
+check("nothing elevates on the polling path", () => {
+  // Elevation on a timer is a polkit dialog on the plugin's schedule instead of
+  // the user's. Reads are allowed to fail; they are not allowed to prompt.
+  const readers = [
+    psCommand(), statsCommand(), systemDfCommand(), imagesCommand(),
+    volumesCommand(), networksCommand(), hostDiskCommand(), eventsCommand(),
+    inspectRestartsCommand(["abc"]), daemonAccessCommand(), daemonStatusCommand()
+  ]
+
+  for (const command of readers) {
+    const flat = command.join(" ")
+    assert.ok(!flat.includes("pkexec"), "no pkexec: " + flat)
+    assert.ok(!flat.includes("sudo "), "no sudo: " + flat)
+    assert.ok(!/\bsu\b/.test(command[0]), "no su: " + flat)
+  }
+})
+
+check("a locked socket is not a dead daemon", () => {
+  // Three states, three different things to go and fix. Telling someone the
+  // daemon is down when they simply have no key sends them to the wrong one.
+  assert.strictEqual(daemonFailureKey(127, false), "daemon.missing")
+  assert.strictEqual(daemonFailureKey(127, true), "daemon.missing", "no engine outranks no key")
+  assert.strictEqual(daemonFailureKey(1, true), "daemon.noAccess")
+  assert.strictEqual(daemonFailureKey(1, false), "daemon.down")
+
+  for (const key of ["daemon.missing", "daemon.noAccess", "daemon.noAccessHint", "daemon.down"]) {
+    assert.ok(has(key), key + " is in both tables")
+  }
+})
+
+check("the no-access text does not coach anyone towards root", () => {
+  // It used to read "is your user in the 'docker' group?", which on Omarchy's
+  // default is telling people to take passwordless root to make a bar widget
+  // work. Rootless comes first now, and the group is named with what it costs.
+  try {
+    for (const lang of ["en", "pt"]) {
+      setLanguage(lang)
+      const hint = t("daemon.noAccessHint")
+      assert.ok(/rootless/i.test(hint), lang + " offers rootless")
+      assert.ok(/Setup > Security > Sudoless Docker/.test(hint), lang + " names the supported toggle")
+      assert.ok(/root/i.test(hint), lang + " says what the group costs")
+
+      // The bare state line stays a state, not an instruction.
+      assert.ok(!/group/i.test(t("daemon.noAccess")), lang + " does not ask about groups")
+      assert.ok(!/grupo/i.test(t("daemon.noAccess")), lang + " does not ask about groups")
+    }
+  } finally {
+    setLanguage("en")
+  }
+})
+
+check("without a key, lazydocker goes through omarchy's own wrapper", () => {
+  // Not our pkexec: omarchy-launch-docker-tui already prompts, carries the
+  // reason, and is the shell's. Shipping our own escalation would rebuild the
+  // shortcut Omarchy just closed, without the warning attached.
+  const group = {
+    project: "web-shop", loose: false,
+    configFiles: ["/srv/web-shop/compose.yml"],
+    containers: [{ id: "a" }]
+  }
+
+  assert.deepStrictEqual(lazydockerCommand(group, true), ["omarchy-launch-docker-tui"],
+    "delegated, and unscoped — the scoping is what elevation costs")
+
+  const direct = lazydockerCommand(group, false)
+  assert.strictEqual(direct[0], "omarchy-launch-or-focus-tui", "scoped when we have a key")
+  assert.ok(direct.includes("-p"))
+  assert.ok(!direct.includes("pkexec"), "we never elevate ourselves")
+})
+
+check("the daemon controls are hidden rather than dead", () => {
+  // Starting the system daemon does not hand you its socket, so the button
+  // cannot work. Every control looking live and doing nothing is this plugin's
+  // most-repeated failure.
+  assert.strictEqual(canControlDaemon(true), false)
+  assert.strictEqual(canControlDaemon(false), true)
+})
+
+check("the plugin ships no privilege escalation of its own", () => {
+  // The one rule that does not bend: nothing here adds anyone to a group, and
+  // nothing here runs the setup command for them. That decision, and the
+  // warning attached to it, belong to Omarchy.
+  const files = ["Docker.js", "Service.qml", "Panel.qml",
+    "bin/omarchy-docker-ask-agent", "bin/omarchy-docker-ask-agent-stack"]
+
+  for (const path of files) {
+    const body = fs.readFileSync(__dirname + "/" + path, "utf8")
+    assert.ok(!/usermod/.test(body), path + " never edits groups")
+    assert.ok(!/gpasswd/.test(body), path + " never edits groups")
+    assert.ok(!/omarchy-setup-security-sudoless-docker/.test(body),
+      path + " never runs the opt-in for the user")
+  }
+})
+
 check("notifications stay silenced when the user asked for silence", () => {
   // Omarchy silences everything under Do Not Disturb except what
   // shouldBypassDnd() lets through, and that rule is

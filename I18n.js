@@ -123,7 +123,14 @@ var STRINGS = {
     "count.containers": "{running}/{total} containers",
     "count.filtered": "{shown} of {total} containers",
     "daemon.unavailable": "unavailable",
-    "daemon.noAccess": "no access to Docker — is your user in the 'docker' group?",
+    // Three states, because they send you to three different places. The old
+    // noAccess text asked "is your user in the 'docker' group?", which on
+    // Omarchy's default is coaching someone towards passwordless root — the
+    // exact thing the shell stopped doing by default, and it named plugins as
+    // the reason.
+    "daemon.down": "the Docker daemon is not running",
+    "daemon.noAccess": "no access to the Docker daemon",
+    "daemon.noAccessHint": "Rootless Docker gives this widget full access without granting root. Or opt in at Setup > Security > Sudoless Docker — that adds you to the docker group, which is passwordless root.",
     "daemon.missing": "docker not found",
     "daemon.stopConfirm": "Stop the {engine} daemon?\nEvery running container stops with it.",
 
@@ -297,7 +304,9 @@ var STRINGS = {
     "count.containers": "{running}/{total} containers",
     "count.filtered": "{shown} de {total} containers",
     "daemon.unavailable": "indisponível",
-    "daemon.noAccess": "sem acesso ao Docker — o usuário está no grupo 'docker'?",
+    "daemon.down": "o daemon do Docker não está rodando",
+    "daemon.noAccess": "sem acesso ao daemon do Docker",
+    "daemon.noAccessHint": "O Docker rootless dá acesso completo a este widget sem conceder root. Ou habilite em Setup > Security > Sudoless Docker — isso adiciona você ao grupo docker, que é root sem senha.",
     "daemon.missing": "docker não encontrado",
     "daemon.stopConfirm": "Parar o daemon do {engine}?\nTodo container em execução para junto.",
 

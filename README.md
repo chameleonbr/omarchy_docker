@@ -99,9 +99,30 @@ omarchy plugin add \
   --yes
 ```
 
-Requires `docker` (and your user in the `docker` group — no root, no polkit).
-`lazydocker` is optional; the buttons that open it are only useful if you have
-it installed.
+Requires `docker`. `lazydocker` is optional; the buttons that open it are only
+useful if you have it installed.
+
+**On Omarchy's default, your user is deliberately not in the `docker` group.**
+That group is passwordless root — a container can bind-mount `/` and rewrite the
+host — so Omarchy stopped granting it by default, and its warning names plugins
+as one of the risks. This one agrees with that, and works on the default rather
+than asking you off it:
+
+| | Without daemon access | With it |
+|---|---|---|
+| the mosaic | a message saying so, and the two ways to fix it | live |
+| open lazydocker | `omarchy-launch-docker-tui`, which prompts | scoped to the stack you clicked |
+| daemon start/stop | hidden — starting it would not hand you the socket | shown |
+
+To get the live mosaic, pick one:
+
+- **Rootless Docker** — recommended. The daemon runs as you in a user
+  namespace, so there is no root to escalate to. This plugin never names a
+  socket path; it shells out to `docker`, which follows `DOCKER_HOST`, so it
+  works with no configuration here.
+- **`Setup > Security > Sudoless Docker`** — Omarchy's own opt-in. Convenient,
+  and it is passwordless root for everything running as you. Omarchy shows the
+  warning and asks; this plugin never runs it for you.
 
 ## Using it
 
@@ -330,7 +351,7 @@ is 30 seconds for a reason.
 node test_docker.js
 ```
 
-207 checks, no framework, no network, no daemon. `fixtures/` holds real
+214 checks, no framework, no network, no daemon. `fixtures/` holds real
 `docker ps` and `docker stats` output; the tests run against that.
 
 See `CLAUDE.md` for how the pieces fit and what has already bitten.
@@ -343,12 +364,23 @@ showing the key.
 
 ## Security
 
-The plugin runs entirely as you. There is no root, no polkit, no setuid: it
-calls the `docker` CLI, which works because your user is in the `docker` group.
-That group is root-equivalent on the host — if you have it, this plugin can do
-what you can do, and nothing more.
+The plugin runs entirely as you. There is no root, no setuid, and it never
+elevates on its own: reads are allowed to fail, and the only prompt you will
+ever see comes from clicking something that opens a terminal, through Omarchy's
+own wrapper.
+
+It can do what you can do, and nothing more. If you have not granted daemon
+access, that is very little, and the widget says so instead of pretending.
 
 Deliberate choices, rather than accidents:
+
+- **Nothing elevates on a timer.** The widget polls the daemon on a schedule; a
+  polkit prompt raised on that schedule would be a password dialog on the
+  plugin's clock rather than yours. Elevation happens only when you click
+  something, and only through `omarchy-launch-docker-tui`.
+- **The plugin ships no privilege escalation.** Nothing here runs `usermod`,
+  `gpasswd`, `sudo` or `pkexec`, and nothing runs Omarchy's opt-in command for
+  you. There is a test asserting all of that.
 
 - **Nothing destructive without a named confirmation.** Removing a container and
   every prune button state what will be removed and how much, because "are you

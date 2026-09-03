@@ -1818,6 +1818,43 @@ function daemonCommand(action) {
   return []
 }
 
+// ------------------------------------------------- reaching the daemon
+//
+// Omarchy leaves users out of the `docker` group by default, on purpose: the
+// group is passwordless root, because a container can bind-mount / and rewrite
+// the host. Their own warning names this plugin as the risk — "a single rogue
+// script, dependency, or plugin running as you is enough".
+//
+// So a plugin must never be the reason someone opts back in, and it must never
+// be the thing that asks. `omarchy-sudo-docker` is the shell's own contract for
+// the question, and its comment is explicit that everything which has to make
+// this choice asks there rather than testing group membership itself. It exits
+// 0 when sudo is needed.
+//
+// Nothing here elevates. Elevation on the poll path would be a polkit dialog on
+// the plugin's schedule rather than the user's, which is the shape of malware,
+// not of a bar widget. Reads simply fail and the widget says so.
+function daemonAccessCommand() {
+  return ["omarchy-sudo-docker"]
+}
+
+// The listing failed and the socket is not ours. That is a third state: not a
+// dead daemon, not an empty machine, but a daemon deliberately out of reach.
+// Telling someone their daemon is down when the truth is "you were not given a
+// key" sends them to fix the wrong thing.
+function daemonFailureKey(exitCode, needsSudo) {
+  if (exitCode === 127) return "daemon.missing"
+  if (needsSudo) return "daemon.noAccess"
+  return "daemon.down"
+}
+
+// Starting the system daemon does not hand you its socket, so offering the
+// button is offering a button that cannot work — this plugin's most-repeated
+// failure. The daemon controls are for someone who can already reach it.
+function canControlDaemon(needsSudo) {
+  return !needsSudo
+}
+
 function daemonStatusCommand() {
   return ["systemctl", "is-enabled", ENGINE + ".service"]
 }
@@ -1977,7 +2014,19 @@ function readingSucceeded(exitCode) {
 }
 
 // group === null opens the whole daemon.
-function lazydockerCommand(group) {
+function lazydockerCommand(group, needsSudo) {
+  // Without the group, lazydocker cannot read the socket either, and the fix is
+  // not ours to invent: `omarchy-launch-docker-tui` is the shell's own wrapper
+  // and it already does the pkexec, with the prompt the user expects from a
+  // click. Delegating costs the per-stack scoping — pkexec plus an argv the
+  // launcher rebuilds and evals is not somewhere to be clever — and a widget
+  // that opens the whole daemon is the same degradation containers started
+  // outside compose already get.
+  //
+  // Shipping our own escalation here would rebuild the shortcut Omarchy just
+  // closed, with none of the warning attached.
+  if (needsSudo) return ["omarchy-launch-docker-tui"]
+
   var project = group && !group.loose ? group.project : ""
   var command = [
     "omarchy-launch-or-focus-tui",
